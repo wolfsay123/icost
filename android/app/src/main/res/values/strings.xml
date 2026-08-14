@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="widget_description">显示当前账本余额与本月收支</string>
+    <string name="accessibility_description">仅从微信和支付宝付款结果页生成待确认的记账候选</string>
+    <string name="app_name">智记</string>
+    <string name="title_activity_main">智记</string>
+    <string name="package_name">com.zhiji.local</string>
+    <string name="custom_url_scheme">com.zhiji.local</string>
+</resources>

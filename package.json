@@ -1,0 +1,25 @@
+{
+  "name": "zhiji-local",
+  "version": "0.3.0",
+  "private": true,
+  "description": "智记本地记账与坚果云同步应用",
+  "scripts": {
+    "build:web": "esbuild src/app.js --bundle --format=iife --platform=browser --outfile=public/app.js",
+    "start": "npm run build:web && node server.js",
+    "check": "node --check server.js && node --check scripts/build-android.mjs && esbuild src/app.js --bundle --format=iife --platform=browser --outfile=/tmp/zhiji-app-check.js --log-level=warning && node --test tests/*.test.mjs",
+    "android:sync": "npm run build:web && cap sync android",
+    "android:apk": "node scripts/build-android.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@capacitor/app": "^8.0.0",
+    "@capacitor/core": "^8.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/cli": "^8.0.0",
+    "esbuild": "^0.25.0"
+  }
+}

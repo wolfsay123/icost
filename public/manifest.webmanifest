@@ -1,0 +1,9 @@
+{
+  "name": "智记 - 本地记账",
+  "short_name": "智记",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f3f4ef",
+  "theme_color": "#173d37",
+  "description": "本地优先、支持坚果云加密同步的个人记账应用"
+}

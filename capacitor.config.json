@@ -1,0 +1,14 @@
+{
+  "appId": "com.zhiji.local",
+  "appName": "智记",
+  "webDir": "public",
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#f3f4ef"
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}
