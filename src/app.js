@@ -1,6 +1,31 @@
 import { App } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
 import {
+  BookOpen,
+  CalendarClock,
+  ChartPie,
+  ChevronRight,
+  CircleDollarSign,
+  Cloud,
+  createIcons,
+  Database,
+  HandCoins,
+  Home,
+  Menu,
+  Mic,
+  Pencil,
+  Plus,
+  ScanLine,
+  Search,
+  Settings,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
+  Trash2,
+  WalletCards,
+  X
+} from "lucide";
+import {
   SCHEMA_VERSION,
   STORAGE_KEY,
   createDefaultLedger,
@@ -74,11 +99,37 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
   const VIEW_TITLES = {
     home: "我的账本",
     record: "记一笔",
+    accounts: "我的账户",
     stats: "收支统计",
     plans: "预算与计划",
     search: "搜索账目",
     books: "账本管理",
     settings: "设置与同步"
+  };
+
+  const LUCIDE_ICONS = {
+    BookOpen,
+    CalendarClock,
+    ChartPie,
+    ChevronRight,
+    CircleDollarSign,
+    Cloud,
+    Database,
+    HandCoins,
+    Home,
+    Menu,
+    Mic,
+    Pencil,
+    Plus,
+    ScanLine,
+    Search,
+    Settings,
+    ShieldCheck,
+    SlidersHorizontal,
+    Sparkles,
+    Trash2,
+    WalletCards,
+    X
   };
 
   const TRANSACTION_TYPE_LABELS = {
@@ -118,6 +169,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
   let transactionPhotos = [];
   let transactionLocation = null;
   let activeViewName = "home";
+  let activeSettingsView = "ledger";
   let editingRefundId = null;
 
   function makeId(prefix) {
@@ -177,6 +229,14 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
   function cacheElements() {
     document.querySelectorAll("[id]").forEach((element) => {
       elements[toCamelCase(element.id)] = element;
+    });
+  }
+
+  function renderIcons(root = document) {
+    createIcons({
+      icons: LUCIDE_ICONS,
+      root,
+      attrs: { "aria-hidden": "true" }
     });
   }
 
@@ -343,6 +403,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
   function renderAll() {
     renderSelects();
     renderHome();
+    renderAccounts();
     renderStats();
     renderPlans();
     renderTemplates();
@@ -350,6 +411,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     renderBooks();
     renderSettings();
     renderStatus();
+    renderIcons();
   }
 
   function renderStatus() {
@@ -361,6 +423,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       weekday: "long"
     });
     elements.lastSaveText.textContent = formatTime(state.metadata.lastSavedAt);
+    elements.drawerBookName.textContent = activeBook().name;
     if (state.metadata.lastSyncedAt) {
       elements.syncBadge.classList.add("is-synced");
       elements.syncBadge.lastChild.textContent = `已同步 ${new Date(state.metadata.lastSyncedAt).toLocaleDateString("zh-CN")}`;
@@ -513,6 +576,18 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     renderTransactionList(elements.recentTransactions, sortedTransactions(currentTransactions()).slice(0, 8));
   }
 
+  function renderAccounts() {
+    const balances = accountBalances();
+    const accounts = availableAccounts(state.activeBookId, { includeHidden: true });
+    const values = accounts.map((account) => Number(balances[account.id] || 0));
+    const assets = values.filter((value) => value > 0).reduce((sum, value) => sum + value, 0);
+    const liabilities = Math.abs(values.filter((value) => value < 0).reduce((sum, value) => sum + value, 0));
+    elements.accountsNetTotal.textContent = formatMoney(assets - liabilities, true);
+    elements.accountsAssetTotal.textContent = formatMoney(assets);
+    elements.accountsLiabilityTotal.textContent = formatMoney(liabilities);
+    elements.accountsUpdatedText.textContent = `${accounts.length} 个账户 · ${activeBook().name}`;
+  }
+
   function renderDailyChart(expenseTransactions) {
     const now = new Date();
     const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
@@ -537,7 +612,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       return;
     }
 
-    container.innerHTML = transactions.map((item) => {
+    const renderItem = (item) => {
       const category = categoryById(item.categoryId);
       const account = accountById(item.accountId);
       const target = item.targetAccountId ? accountById(item.targetAccountId) : null;
@@ -571,10 +646,25 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
           <div class="transaction-actions">
             ${["expense", "income"].includes(item.type) && refundAmount < item.amount ? '<button class="row-action" type="button" data-action="refund" title="退款" aria-label="退款">退</button>' : ""}
             ${["payable", "receivable"].includes(item.type) && remainingSettlementAmount(state, item.id) > 0 ? '<button class="row-action" type="button" data-action="settle" title="结算" aria-label="结算">结</button>' : ""}
-            <button class="row-action edit" type="button" data-action="edit" title="编辑" aria-label="编辑">✎</button>
-            <button class="row-action delete" type="button" data-action="delete" title="删除" aria-label="删除">×</button>
+            <button class="row-action edit" type="button" data-action="edit" title="编辑" aria-label="编辑"><i data-lucide="pencil"></i></button>
+            <button class="row-action delete" type="button" data-action="delete" title="删除" aria-label="删除"><i data-lucide="trash-2"></i></button>
           </div>
         </article>`;
+    };
+
+    const groups = new Map();
+    transactions.forEach((item) => {
+      if (!groups.has(item.date)) groups.set(item.date, []);
+      groups.get(item.date).push(item);
+    });
+    container.innerHTML = [...groups.entries()].map(([date, items]) => {
+      const income = items.filter((item) => item.type === "income").reduce((sum, item) => sum + netBaseAmount(item), 0);
+      const expense = items.filter((item) => item.type === "expense").reduce((sum, item) => sum + netBaseAmount(item), 0);
+      const summary = [income > 0 ? `收入 ${formatMoney(income)}` : "", expense > 0 ? `支出 ${formatMoney(expense)}` : ""].filter(Boolean).join(" · ");
+      return `<section class="transaction-day-group">
+        <header class="transaction-day-header"><strong>${formatShortDate(date)}</strong><span>${summary || `${items.length} 笔`}</span></header>
+        ${items.map(renderItem).join("")}
+      </section>`;
     }).join("");
   }
 
@@ -698,6 +788,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       const detail = `${escapeHtml(item.sourceApp || item.source || "系统")} · ${item.channel === "accessibility" ? "无障碍" : item.channel === "notification" ? "通知" : "候选"} · ${new Date(Number(item.createdAt) || Date.now()).toLocaleString("zh-CN")}${item.confidence ? ` · ${item.confidence}%` : ""}`;
       return `<article class="plan-item" data-candidate-id="${escapeHtml(item.id)}"><div class="plan-copy"><strong>${title}</strong><small>${detail}</small></div><div class="plan-actions"><button class="book-action" type="button" data-candidate-action="parse">确认</button><button class="book-action danger" type="button" data-candidate-action="dismiss">忽略</button></div></article>`;
     }).join("") : '<div class="empty-state"><strong>暂无候选</strong></div>';
+    renderIcons(elements.autoBookingList);
   }
 
   async function refreshAutoBookingStatus() {
@@ -1005,13 +1096,44 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     }).join("");
   }
 
+  function openDrawer() {
+    document.body.classList.add("is-drawer-open");
+    elements.appDrawer.setAttribute("aria-hidden", "false");
+  }
+
+  function closeDrawer() {
+    document.body.classList.remove("is-drawer-open");
+    elements.appDrawer.setAttribute("aria-hidden", "true");
+  }
+
+  function switchSettingsView(viewName = "ledger") {
+    const target = ["ledger", "automation", "data"].includes(viewName) ? viewName : "ledger";
+    activeSettingsView = target;
+    document.querySelectorAll("[data-settings-view]").forEach((panel) => {
+      panel.classList.toggle("is-active", panel.dataset.settingsView === target);
+    });
+    document.querySelectorAll("[data-settings-tab]").forEach((button) => {
+      button.classList.toggle("is-active", button.dataset.settingsTab === target);
+    });
+  }
+
+  function navigateWithControl(control) {
+    if (control.dataset.settingsPanel) switchSettingsView(control.dataset.settingsPanel);
+    switchView(control.dataset.view || control.dataset.viewLink);
+    closeDrawer();
+    if (control.dataset.scrollTarget) {
+      setTimeout(() => document.getElementById(control.dataset.scrollTarget)?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+    }
+  }
+
   function switchView(viewName) {
     const target = VIEW_TITLES[viewName] ? viewName : "home";
     activeViewName = target;
+    document.body.dataset.activeView = target;
     document.querySelectorAll(".view").forEach((view) => view.classList.toggle("is-active", view.id === `view-${target}`));
-    document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("is-active", item.dataset.view === target));
+    document.querySelectorAll(".bottom-nav .nav-item").forEach((item) => item.classList.toggle("is-active", item.dataset.view === target));
     elements.viewTitle.textContent = VIEW_TITLES[target];
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    window.scrollTo({ top: 0, behavior: "auto" });
   }
 
   function transactionFromForm() {
@@ -1878,12 +2000,22 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
 
   function bindEvents() {
     document.querySelectorAll("[data-view]").forEach((button) => {
-      button.addEventListener("click", () => switchView(button.dataset.view));
+      button.addEventListener("click", () => navigateWithControl(button));
     });
     document.querySelectorAll("[data-view-link]").forEach((button) => {
-      button.addEventListener("click", () => switchView(button.dataset.viewLink));
+      button.addEventListener("click", () => navigateWithControl(button));
     });
     elements.quickAddButton.addEventListener("click", () => switchView("record"));
+    elements.mobileAddButton.addEventListener("click", () => switchView("record"));
+    elements.drawerOpen.addEventListener("click", openDrawer);
+    elements.drawerClose.addEventListener("click", closeDrawer);
+    elements.drawerScrim.addEventListener("click", closeDrawer);
+    document.querySelectorAll("[data-settings-tab]").forEach((button) => {
+      button.addEventListener("click", () => switchSettingsView(button.dataset.settingsTab));
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && document.body.classList.contains("is-drawer-open")) closeDrawer();
+    });
 
     elements.quickRecordForm.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -3186,6 +3318,10 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       if (result?.url?.startsWith("zhiji://record")) switchView("record");
     }).catch(() => {});
     App.addListener("backButton", () => {
+      if (document.body.classList.contains("is-drawer-open")) {
+        closeDrawer();
+        return;
+      }
       if (elements.parseDialog.open) {
         currentAutoBookingCandidateId = null;
         elements.parseDialog.close();

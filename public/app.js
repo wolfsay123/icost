@@ -579,6 +579,357 @@
   // src/app.js
   init_dist();
 
+  // node_modules/lucide/dist/esm/defaultAttributes.mjs
+  var defaultAttributes = {
+    xmlns: "http://www.w3.org/2000/svg",
+    width: 24,
+    height: 24,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    "stroke-width": 2,
+    "stroke-linecap": "round",
+    "stroke-linejoin": "round"
+  };
+
+  // node_modules/lucide/dist/esm/createElement.mjs
+  var createSVGElement = ([tag, attrs, children]) => {
+    const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    Object.keys(attrs).forEach((name) => {
+      element.setAttribute(name, String(attrs[name]));
+    });
+    if (children?.length) {
+      children.forEach((child) => {
+        const childElement = createSVGElement(child);
+        element.appendChild(childElement);
+      });
+    }
+    return element;
+  };
+  var createElement = (iconNode, customAttrs = {}) => {
+    const tag = "svg";
+    const attrs = {
+      ...defaultAttributes,
+      ...customAttrs
+    };
+    return createSVGElement([tag, attrs, iconNode]);
+  };
+
+  // node_modules/lucide/dist/esm/shared/src/utils/hasA11yProp.mjs
+  var hasA11yProp = (props) => {
+    for (const prop in props) {
+      if (prop.startsWith("aria-") || prop === "role" || prop === "title") {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  // node_modules/lucide/dist/esm/shared/src/utils/mergeClasses.mjs
+  var mergeClasses = (...classes) => classes.filter((className, index, array) => {
+    return Boolean(className) && className.trim() !== "" && array.indexOf(className) === index;
+  }).join(" ").trim();
+
+  // node_modules/lucide/dist/esm/shared/src/utils/toCamelCase.mjs
+  var toCamelCase = (string) => string.replace(
+    /^([A-Z])|[\s-_]+(\w)/g,
+    (match, p1, p2) => p2 ? p2.toUpperCase() : p1.toLowerCase()
+  );
+
+  // node_modules/lucide/dist/esm/shared/src/utils/toPascalCase.mjs
+  var toPascalCase = (string) => {
+    const camelCase = toCamelCase(string);
+    return camelCase.charAt(0).toUpperCase() + camelCase.slice(1);
+  };
+
+  // node_modules/lucide/dist/esm/replaceElement.mjs
+  var getAttrs = (element) => Array.from(element.attributes).reduce((attrs, attr) => {
+    attrs[attr.name] = attr.value;
+    return attrs;
+  }, {});
+  var getClassNames = (attrs) => {
+    if (typeof attrs === "string") return attrs;
+    if (!attrs || !attrs.class) return "";
+    if (attrs.class && typeof attrs.class === "string") {
+      return attrs.class.split(" ");
+    }
+    if (attrs.class && Array.isArray(attrs.class)) {
+      return attrs.class;
+    }
+    return "";
+  };
+  var replaceElement = (element, { nameAttr, icons, attrs }) => {
+    const iconName = element.getAttribute(nameAttr);
+    if (iconName == null) return;
+    const ComponentName = toPascalCase(iconName);
+    const iconNode = icons[ComponentName];
+    if (!iconNode) {
+      return console.warn(
+        `${element.outerHTML} icon name was not found in the provided icons object.`
+      );
+    }
+    const elementAttrs = getAttrs(element);
+    const ariaProps = hasA11yProp(elementAttrs) ? {} : { "aria-hidden": "true" };
+    const iconAttrs = {
+      ...defaultAttributes,
+      "data-lucide": iconName,
+      ...ariaProps,
+      ...attrs,
+      ...elementAttrs
+    };
+    const elementClassNames = getClassNames(elementAttrs);
+    const className = getClassNames(attrs);
+    const classNames = mergeClasses(
+      "lucide",
+      `lucide-${iconName}`,
+      ...elementClassNames,
+      ...className
+    );
+    if (classNames) {
+      Object.assign(iconAttrs, {
+        class: classNames
+      });
+    }
+    const svgElement = createElement(iconNode, iconAttrs);
+    return element.parentNode?.replaceChild(svgElement, element);
+  };
+
+  // node_modules/lucide/dist/esm/icons/book-open.mjs
+  var BookOpen = [
+    ["path", { d: "M12 5v16" }],
+    [
+      "path",
+      {
+        d: "M20.001 19A2 2 0 0022 17V5a2 2 0 00-1.999-2L16 3.002A5 5 0 0012 5a5 5 0 00-4-2H4a2 2 0 00-2 2v12a2 2 0 001.999 2H8a5 5 0 014 2 5 5 0 014-2z"
+      }
+    ]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/calendar-clock.mjs
+  var CalendarClock = [
+    ["path", { d: "M16 14v2.2l1.6 1" }],
+    ["path", { d: "M16 2v3" }],
+    ["path", { d: "M21 7.338V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2h2.338" }],
+    ["path", { d: "M3 9h5.859" }],
+    ["path", { d: "M8 2v3" }],
+    ["circle", { cx: "16", cy: "16", r: "6" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/chart-pie.mjs
+  var ChartPie = [
+    [
+      "path",
+      {
+        d: "M21 12c.552 0 1.005-.449.95-.998a10 10 0 0 0-8.953-8.951c-.55-.055-.998.398-.998.95v8a1 1 0 0 0 1 1z"
+      }
+    ],
+    ["path", { d: "M21.21 15.89A10 10 0 1 1 8 2.83" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/chevron-right.mjs
+  var ChevronRight = [["path", { d: "m9 18 6-6-6-6" }]];
+
+  // node_modules/lucide/dist/esm/icons/circle-dollar-sign.mjs
+  var CircleDollarSign = [
+    ["circle", { cx: "12", cy: "12", r: "10" }],
+    ["path", { d: "M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8" }],
+    ["path", { d: "M12 18V6" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/cloud.mjs
+  var Cloud = [["path", { d: "M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z" }]];
+
+  // node_modules/lucide/dist/esm/icons/database.mjs
+  var Database = [
+    ["ellipse", { cx: "12", cy: "5", rx: "9", ry: "3" }],
+    ["path", { d: "M3 5V19A9 3 0 0 0 21 19V5" }],
+    ["path", { d: "M3 12A9 3 0 0 0 21 12" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/hand-coins.mjs
+  var HandCoins = [
+    ["path", { d: "M11 15h2a2 2 0 1 0 0-4h-3c-.6 0-1.1.2-1.4.6L3 17" }],
+    [
+      "path",
+      {
+        d: "m7 21 1.6-1.4c.3-.4.8-.6 1.4-.6h4c1.1 0 2.1-.4 2.8-1.2l4.6-4.4a2 2 0 0 0-2.75-2.91l-4.2 3.9"
+      }
+    ],
+    ["path", { d: "m2 16 6 6" }],
+    ["circle", { cx: "16", cy: "9", r: "2.9" }],
+    ["circle", { cx: "6", cy: "5", r: "3" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/house.mjs
+  var House = [
+    ["path", { d: "M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" }],
+    [
+      "path",
+      {
+        d: "M3 10a2 2 0 0 1 .709-1.528l7-6a2 2 0 0 1 2.582 0l7 6A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+      }
+    ]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/menu.mjs
+  var Menu = [
+    ["path", { d: "M4 5h16" }],
+    ["path", { d: "M4 12h16" }],
+    ["path", { d: "M4 19h16" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/mic.mjs
+  var Mic = [
+    ["path", { d: "M12 19v3" }],
+    ["path", { d: "M19 10v2a7 7 0 0 1-14 0v-2" }],
+    ["rect", { x: "9", y: "2", width: "6", height: "13", rx: "3" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/pencil.mjs
+  var Pencil = [
+    [
+      "path",
+      {
+        d: "M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"
+      }
+    ],
+    ["path", { d: "m15 5 4 4" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/plus.mjs
+  var Plus = [
+    ["path", { d: "M5 12h14" }],
+    ["path", { d: "M12 5v14" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/scan-line.mjs
+  var ScanLine = [
+    ["path", { d: "M3 7V5a2 2 0 0 1 2-2h2" }],
+    ["path", { d: "M17 3h2a2 2 0 0 1 2 2v2" }],
+    ["path", { d: "M21 17v2a2 2 0 0 1-2 2h-2" }],
+    ["path", { d: "M7 21H5a2 2 0 0 1-2-2v-2" }],
+    ["path", { d: "M7 12h10" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/search.mjs
+  var Search = [
+    ["path", { d: "m21 21-4.34-4.34" }],
+    ["circle", { cx: "11", cy: "11", r: "8" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/settings.mjs
+  var Settings = [
+    [
+      "path",
+      {
+        d: "M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"
+      }
+    ],
+    ["circle", { cx: "12", cy: "12", r: "3" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/shield-check.mjs
+  var ShieldCheck = [
+    [
+      "path",
+      {
+        d: "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"
+      }
+    ],
+    ["path", { d: "m9 12 2 2 4-4" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/sliders-horizontal.mjs
+  var SlidersHorizontal = [
+    ["path", { d: "M10 5H3" }],
+    ["path", { d: "M12 19H3" }],
+    ["path", { d: "M14 3v4" }],
+    ["path", { d: "M16 17v4" }],
+    ["path", { d: "M21 12h-9" }],
+    ["path", { d: "M21 19h-5" }],
+    ["path", { d: "M21 5h-7" }],
+    ["path", { d: "M8 10v4" }],
+    ["path", { d: "M8 12H3" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/sparkles.mjs
+  var Sparkles = [
+    [
+      "path",
+      {
+        d: "M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"
+      }
+    ],
+    ["path", { d: "M20 2v4" }],
+    ["path", { d: "M22 4h-4" }],
+    ["circle", { cx: "4", cy: "20", r: "2" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/trash-2.mjs
+  var Trash2 = [
+    ["path", { d: "M10 11v6" }],
+    ["path", { d: "M14 11v6" }],
+    ["path", { d: "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" }],
+    ["path", { d: "M3 6h18" }],
+    ["path", { d: "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/wallet-cards.mjs
+  var WalletCards = [
+    ["path", { d: "M3 11h3.75a2 2 0 0 1 1.6.8l.45.6a4 4 0 0 0 6.4 0l.45-.6a2 2 0 0 1 1.6-.8H21" }],
+    ["path", { d: "M3 7h18" }],
+    ["rect", { x: "3", y: "3", width: "18", height: "18", rx: "2" }]
+  ];
+
+  // node_modules/lucide/dist/esm/icons/x.mjs
+  var X = [
+    ["path", { d: "M18 6 6 18" }],
+    ["path", { d: "m6 6 12 12" }]
+  ];
+
+  // node_modules/lucide/dist/esm/lucide.mjs
+  var createIcons = ({
+    icons = {},
+    nameAttr = "data-lucide",
+    attrs = {},
+    root = document,
+    inTemplates
+  } = {}) => {
+    if (!Object.values(icons).length) {
+      throw new Error(
+        "Please provide an icons object.\nIf you want to use all the icons you can import it like:\n `import { createIcons, icons } from 'lucide';\nlucide.createIcons({icons});`"
+      );
+    }
+    if (typeof root === "undefined") {
+      throw new Error("`createIcons()` only works in a browser environment.");
+    }
+    const elementsToReplace = Array.from(root.querySelectorAll(`[${nameAttr}]`));
+    elementsToReplace.forEach((element) => replaceElement(element, { nameAttr, icons, attrs }));
+    if (inTemplates) {
+      const templates = Array.from(root.querySelectorAll("template"));
+      templates.forEach(
+        (template) => createIcons({
+          icons,
+          nameAttr,
+          attrs,
+          root: template.content,
+          inTemplates
+        })
+      );
+    }
+    if (nameAttr === "data-lucide") {
+      const deprecatedElements = root.querySelectorAll("[icon-name]");
+      if (deprecatedElements.length > 0) {
+        console.warn(
+          "[Lucide] Some icons were found with the now deprecated icon-name attribute. These will still be replaced for backwards compatibility, but will no longer be supported in v1.0 and you should switch to data-lucide"
+        );
+        Array.from(deprecatedElements).forEach(
+          (element) => replaceElement(element, { nameAttr: "icon-name", icons, attrs })
+        );
+      }
+    }
+  };
+
   // src/ledger-schema.mjs
   var STORAGE_KEY = "zhiji.local.v1";
   var SCHEMA_VERSION = 5;
@@ -1679,11 +2030,36 @@
     const VIEW_TITLES = {
       home: "\u6211\u7684\u8D26\u672C",
       record: "\u8BB0\u4E00\u7B14",
+      accounts: "\u6211\u7684\u8D26\u6237",
       stats: "\u6536\u652F\u7EDF\u8BA1",
       plans: "\u9884\u7B97\u4E0E\u8BA1\u5212",
       search: "\u641C\u7D22\u8D26\u76EE",
       books: "\u8D26\u672C\u7BA1\u7406",
       settings: "\u8BBE\u7F6E\u4E0E\u540C\u6B65"
+    };
+    const LUCIDE_ICONS = {
+      BookOpen,
+      CalendarClock,
+      ChartPie,
+      ChevronRight,
+      CircleDollarSign,
+      Cloud,
+      Database,
+      HandCoins,
+      Home: House,
+      Menu,
+      Mic,
+      Pencil,
+      Plus,
+      ScanLine,
+      Search,
+      Settings,
+      ShieldCheck,
+      SlidersHorizontal,
+      Sparkles,
+      Trash2,
+      WalletCards,
+      X
     };
     const TRANSACTION_TYPE_LABELS = {
       expense: "\u652F\u51FA",
@@ -1720,6 +2096,7 @@
     let transactionPhotos = [];
     let transactionLocation = null;
     let activeViewName = "home";
+    let activeSettingsView = "ledger";
     let editingRefundId = null;
     function makeId(prefix) {
       if (crypto.randomUUID) return `${prefix}-${crypto.randomUUID()}`;
@@ -1772,10 +2149,17 @@
     }
     function cacheElements() {
       document.querySelectorAll("[id]").forEach((element) => {
-        elements[toCamelCase(element.id)] = element;
+        elements[toCamelCase2(element.id)] = element;
       });
     }
-    function toCamelCase(value) {
+    function renderIcons(root = document) {
+      createIcons({
+        icons: LUCIDE_ICONS,
+        root,
+        attrs: { "aria-hidden": "true" }
+      });
+    }
+    function toCamelCase2(value) {
       return value.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
     }
     function localDate(date = /* @__PURE__ */ new Date()) {
@@ -1899,6 +2283,7 @@
     function renderAll() {
       renderSelects();
       renderHome();
+      renderAccounts();
       renderStats();
       renderPlans();
       renderTemplates();
@@ -1906,6 +2291,7 @@
       renderBooks();
       renderSettings();
       renderStatus();
+      renderIcons();
     }
     function renderStatus() {
       const now = /* @__PURE__ */ new Date();
@@ -1916,6 +2302,7 @@
         weekday: "long"
       });
       elements.lastSaveText.textContent = formatTime(state.metadata.lastSavedAt);
+      elements.drawerBookName.textContent = activeBook().name;
       if (state.metadata.lastSyncedAt) {
         elements.syncBadge.classList.add("is-synced");
         elements.syncBadge.lastChild.textContent = `\u5DF2\u540C\u6B65 ${new Date(state.metadata.lastSyncedAt).toLocaleDateString("zh-CN")}`;
@@ -2022,6 +2409,17 @@
       renderDailyChart(expenseTransactions);
       renderTransactionList(elements.recentTransactions, sortedTransactions(currentTransactions()).slice(0, 8));
     }
+    function renderAccounts() {
+      const balances = accountBalances();
+      const accounts = availableAccounts(state.activeBookId, { includeHidden: true });
+      const values = accounts.map((account) => Number(balances[account.id] || 0));
+      const assets = values.filter((value) => value > 0).reduce((sum, value) => sum + value, 0);
+      const liabilities = Math.abs(values.filter((value) => value < 0).reduce((sum, value) => sum + value, 0));
+      elements.accountsNetTotal.textContent = formatMoney(assets - liabilities, true);
+      elements.accountsAssetTotal.textContent = formatMoney(assets);
+      elements.accountsLiabilityTotal.textContent = formatMoney(liabilities);
+      elements.accountsUpdatedText.textContent = `${accounts.length} \u4E2A\u8D26\u6237 \xB7 ${activeBook().name}`;
+    }
     function renderDailyChart(expenseTransactions) {
       const now = /* @__PURE__ */ new Date();
       const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
@@ -2044,7 +2442,7 @@
         container.innerHTML = '<div class="empty-state"><strong>\u8FD8\u6CA1\u6709\u8D26\u76EE</strong><span>\u4ECE\u4E00\u53E5\u8BDD\u6216\u624B\u52A8\u8BB0\u8D26\u5F00\u59CB</span></div>';
         return;
       }
-      container.innerHTML = transactions.map((item) => {
+      const renderItem = (item) => {
         const category = categoryById(item.categoryId);
         const account = accountById(item.accountId);
         const target = item.targetAccountId ? accountById(item.targetAccountId) : null;
@@ -2072,10 +2470,24 @@
           <div class="transaction-actions">
             ${["expense", "income"].includes(item.type) && refundAmount < item.amount ? '<button class="row-action" type="button" data-action="refund" title="\u9000\u6B3E" aria-label="\u9000\u6B3E">\u9000</button>' : ""}
             ${["payable", "receivable"].includes(item.type) && remainingSettlementAmount(state, item.id) > 0 ? '<button class="row-action" type="button" data-action="settle" title="\u7ED3\u7B97" aria-label="\u7ED3\u7B97">\u7ED3</button>' : ""}
-            <button class="row-action edit" type="button" data-action="edit" title="\u7F16\u8F91" aria-label="\u7F16\u8F91">\u270E</button>
-            <button class="row-action delete" type="button" data-action="delete" title="\u5220\u9664" aria-label="\u5220\u9664">\xD7</button>
+            <button class="row-action edit" type="button" data-action="edit" title="\u7F16\u8F91" aria-label="\u7F16\u8F91"><i data-lucide="pencil"></i></button>
+            <button class="row-action delete" type="button" data-action="delete" title="\u5220\u9664" aria-label="\u5220\u9664"><i data-lucide="trash-2"></i></button>
           </div>
         </article>`;
+      };
+      const groups = /* @__PURE__ */ new Map();
+      transactions.forEach((item) => {
+        if (!groups.has(item.date)) groups.set(item.date, []);
+        groups.get(item.date).push(item);
+      });
+      container.innerHTML = [...groups.entries()].map(([date, items]) => {
+        const income = items.filter((item) => item.type === "income").reduce((sum, item) => sum + netBaseAmount(item), 0);
+        const expense = items.filter((item) => item.type === "expense").reduce((sum, item) => sum + netBaseAmount(item), 0);
+        const summary = [income > 0 ? `\u6536\u5165 ${formatMoney(income)}` : "", expense > 0 ? `\u652F\u51FA ${formatMoney(expense)}` : ""].filter(Boolean).join(" \xB7 ");
+        return `<section class="transaction-day-group">
+        <header class="transaction-day-header"><strong>${formatShortDate(date)}</strong><span>${summary || `${items.length} \u7B14`}</span></header>
+        ${items.map(renderItem).join("")}
+      </section>`;
       }).join("");
     }
     function renderStats() {
@@ -2169,6 +2581,7 @@
         const detail = `${escapeHtml(item.sourceApp || item.source || "\u7CFB\u7EDF")} \xB7 ${item.channel === "accessibility" ? "\u65E0\u969C\u788D" : item.channel === "notification" ? "\u901A\u77E5" : "\u5019\u9009"} \xB7 ${new Date(Number(item.createdAt) || Date.now()).toLocaleString("zh-CN")}${item.confidence ? ` \xB7 ${item.confidence}%` : ""}`;
         return `<article class="plan-item" data-candidate-id="${escapeHtml(item.id)}"><div class="plan-copy"><strong>${title}</strong><small>${detail}</small></div><div class="plan-actions"><button class="book-action" type="button" data-candidate-action="parse">\u786E\u8BA4</button><button class="book-action danger" type="button" data-candidate-action="dismiss">\u5FFD\u7565</button></div></article>`;
       }).join("") : '<div class="empty-state"><strong>\u6682\u65E0\u5019\u9009</strong></div>';
+      renderIcons(elements.autoBookingList);
     }
     async function refreshAutoBookingStatus() {
       try {
@@ -2438,13 +2851,40 @@
       </article>`;
       }).join("");
     }
+    function openDrawer() {
+      document.body.classList.add("is-drawer-open");
+      elements.appDrawer.setAttribute("aria-hidden", "false");
+    }
+    function closeDrawer() {
+      document.body.classList.remove("is-drawer-open");
+      elements.appDrawer.setAttribute("aria-hidden", "true");
+    }
+    function switchSettingsView(viewName = "ledger") {
+      const target = ["ledger", "automation", "data"].includes(viewName) ? viewName : "ledger";
+      activeSettingsView = target;
+      document.querySelectorAll("[data-settings-view]").forEach((panel) => {
+        panel.classList.toggle("is-active", panel.dataset.settingsView === target);
+      });
+      document.querySelectorAll("[data-settings-tab]").forEach((button) => {
+        button.classList.toggle("is-active", button.dataset.settingsTab === target);
+      });
+    }
+    function navigateWithControl(control) {
+      if (control.dataset.settingsPanel) switchSettingsView(control.dataset.settingsPanel);
+      switchView(control.dataset.view || control.dataset.viewLink);
+      closeDrawer();
+      if (control.dataset.scrollTarget) {
+        setTimeout(() => document.getElementById(control.dataset.scrollTarget)?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+      }
+    }
     function switchView(viewName) {
       const target = VIEW_TITLES[viewName] ? viewName : "home";
       activeViewName = target;
+      document.body.dataset.activeView = target;
       document.querySelectorAll(".view").forEach((view) => view.classList.toggle("is-active", view.id === `view-${target}`));
-      document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("is-active", item.dataset.view === target));
+      document.querySelectorAll(".bottom-nav .nav-item").forEach((item) => item.classList.toggle("is-active", item.dataset.view === target));
       elements.viewTitle.textContent = VIEW_TITLES[target];
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      window.scrollTo({ top: 0, behavior: "auto" });
     }
     function transactionFromForm() {
       const type = document.querySelector('input[name="type"]:checked').value;
@@ -3251,12 +3691,22 @@
     }
     function bindEvents() {
       document.querySelectorAll("[data-view]").forEach((button) => {
-        button.addEventListener("click", () => switchView(button.dataset.view));
+        button.addEventListener("click", () => navigateWithControl(button));
       });
       document.querySelectorAll("[data-view-link]").forEach((button) => {
-        button.addEventListener("click", () => switchView(button.dataset.viewLink));
+        button.addEventListener("click", () => navigateWithControl(button));
       });
       elements.quickAddButton.addEventListener("click", () => switchView("record"));
+      elements.mobileAddButton.addEventListener("click", () => switchView("record"));
+      elements.drawerOpen.addEventListener("click", openDrawer);
+      elements.drawerClose.addEventListener("click", closeDrawer);
+      elements.drawerScrim.addEventListener("click", closeDrawer);
+      document.querySelectorAll("[data-settings-tab]").forEach((button) => {
+        button.addEventListener("click", () => switchSettingsView(button.dataset.settingsTab));
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && document.body.classList.contains("is-drawer-open")) closeDrawer();
+      });
       elements.quickRecordForm.addEventListener("submit", (event) => {
         event.preventDefault();
         openParseDialog(elements.quickRecordInput.value);
@@ -4490,6 +4940,10 @@
       }).catch(() => {
       });
       App.addListener("backButton", () => {
+        if (document.body.classList.contains("is-drawer-open")) {
+          closeDrawer();
+          return;
+        }
         if (elements.parseDialog.open) {
           currentAutoBookingCandidateId = null;
           elements.parseDialog.close();
@@ -4533,4 +4987,41 @@
 
 @capacitor/core/dist/index.js:
   (*! Capacitor: https://capacitorjs.com/ - MIT License *)
+
+lucide/dist/esm/defaultAttributes.mjs:
+lucide/dist/esm/createElement.mjs:
+lucide/dist/esm/shared/src/utils/hasA11yProp.mjs:
+lucide/dist/esm/shared/src/utils/mergeClasses.mjs:
+lucide/dist/esm/shared/src/utils/toCamelCase.mjs:
+lucide/dist/esm/shared/src/utils/toPascalCase.mjs:
+lucide/dist/esm/replaceElement.mjs:
+lucide/dist/esm/icons/book-open.mjs:
+lucide/dist/esm/icons/calendar-clock.mjs:
+lucide/dist/esm/icons/chart-pie.mjs:
+lucide/dist/esm/icons/chevron-right.mjs:
+lucide/dist/esm/icons/circle-dollar-sign.mjs:
+lucide/dist/esm/icons/cloud.mjs:
+lucide/dist/esm/icons/database.mjs:
+lucide/dist/esm/icons/hand-coins.mjs:
+lucide/dist/esm/icons/house.mjs:
+lucide/dist/esm/icons/menu.mjs:
+lucide/dist/esm/icons/mic.mjs:
+lucide/dist/esm/icons/pencil.mjs:
+lucide/dist/esm/icons/plus.mjs:
+lucide/dist/esm/icons/scan-line.mjs:
+lucide/dist/esm/icons/search.mjs:
+lucide/dist/esm/icons/settings.mjs:
+lucide/dist/esm/icons/shield-check.mjs:
+lucide/dist/esm/icons/sliders-horizontal.mjs:
+lucide/dist/esm/icons/sparkles.mjs:
+lucide/dist/esm/icons/trash-2.mjs:
+lucide/dist/esm/icons/wallet-cards.mjs:
+lucide/dist/esm/icons/x.mjs:
+lucide/dist/esm/lucide.mjs:
+  (**
+   * @license lucide v1.31.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   *)
 */

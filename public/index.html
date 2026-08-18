@@ -9,52 +9,47 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body>
+  <body data-active-view="home">
     <div class="app-shell">
-      <aside class="sidebar" aria-label="主导航">
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true">智</span>
-          <span>
-            <strong>智记</strong>
-            <small>本地账本</small>
-          </span>
+      <button class="drawer-scrim" id="drawer-scrim" type="button" aria-label="关闭功能菜单"></button>
+      <aside class="sidebar" id="app-drawer" aria-label="功能菜单" aria-hidden="true">
+        <div class="drawer-header">
+          <div class="brand">
+            <span class="brand-mark" aria-hidden="true">智</span>
+            <span><strong>智记</strong><small>本地账本</small></span>
+          </div>
+          <button class="plain-icon-button drawer-close" id="drawer-close" type="button" title="关闭菜单" aria-label="关闭菜单"><i data-lucide="x"></i></button>
         </div>
 
-        <nav class="nav-list">
-          <button class="nav-item is-active" data-view="home" type="button">
-            <span class="nav-icon" aria-hidden="true">⌂</span><span>首页</span>
-          </button>
-          <button class="nav-item" data-view="record" type="button">
-            <span class="nav-icon" aria-hidden="true">＋</span><span>记一笔</span>
-          </button>
-          <button class="nav-item" data-view="stats" type="button">
-            <span class="nav-icon" aria-hidden="true">▥</span><span>统计</span>
-          </button>
-          <button class="nav-item" data-view="plans" type="button">
-            <span class="nav-icon" aria-hidden="true">◫</span><span>计划</span>
-          </button>
-          <button class="nav-item" data-view="search" type="button">
-            <span class="nav-icon" aria-hidden="true">⌕</span><span>搜索</span>
-          </button>
-          <button class="nav-item" data-view="books" type="button">
-            <span class="nav-icon" aria-hidden="true">▤</span><span>账本</span>
-          </button>
-          <button class="nav-item" data-view="settings" type="button">
-            <span class="nav-icon" aria-hidden="true">⚙</span><span>设置</span>
-          </button>
+        <div class="drawer-book">
+          <span>当前账本</span>
+          <strong id="drawer-book-name">日常</strong>
+        </div>
+
+        <nav class="nav-list drawer-nav">
+          <button class="nav-item" data-view="settings" data-settings-panel="automation" type="button"><i data-lucide="scan-line"></i><span><strong>自动记账</strong><small>候选与系统权限</small></span><i data-lucide="chevron-right"></i></button>
+          <button class="nav-item" data-view="plans" type="button"><i data-lucide="circle-dollar-sign"></i><span><strong>预算与计划</strong><small>预算、存钱和目标</small></span><i data-lucide="chevron-right"></i></button>
+          <button class="nav-item" data-view="plans" data-scroll-target="schedule-section" type="button"><i data-lucide="calendar-clock"></i><span><strong>周期与分期</strong><small>固定收支和分期</small></span><i data-lucide="chevron-right"></i></button>
+          <button class="nav-item" data-view="plans" data-scroll-target="settlement-section" type="button"><i data-lucide="hand-coins"></i><span><strong>报销与往来</strong><small>待报销、应收应付</small></span><i data-lucide="chevron-right"></i></button>
+          <button class="nav-item" data-view="search" type="button"><i data-lucide="search"></i><span><strong>搜索账目</strong><small>组合筛选与查找</small></span><i data-lucide="chevron-right"></i></button>
+          <button class="nav-item" data-view="books" type="button"><i data-lucide="book-open"></i><span><strong>账本管理</strong><small>切换和新建账本</small></span><i data-lucide="chevron-right"></i></button>
+        </nav>
+
+        <p class="drawer-section-label">数据与设置</p>
+        <nav class="nav-list drawer-nav drawer-nav-secondary">
+          <button class="nav-item" data-view="settings" data-settings-panel="ledger" type="button"><i data-lucide="settings"></i><span><strong>设置</strong><small>分类、成员和偏好</small></span><i data-lucide="chevron-right"></i></button>
+          <button class="nav-item" data-view="settings" data-settings-panel="data" type="button"><i data-lucide="cloud"></i><span><strong>备份与恢复</strong><small>坚果云和本地文件</small></span><i data-lucide="chevron-right"></i></button>
         </nav>
 
         <div class="local-status">
           <span class="status-dot" aria-hidden="true"></span>
-          <span>
-            <strong>本地数据已启用</strong>
-            <small id="last-save-text">等待首次记账</small>
-          </span>
+          <span><strong>数据仅保存在本机</strong><small id="last-save-text">等待首次记账</small></span>
         </div>
       </aside>
 
       <main class="main-content">
         <header class="topbar">
+          <button class="plain-icon-button drawer-open" id="drawer-open" type="button" title="打开功能菜单" aria-label="打开功能菜单"><i data-lucide="menu"></i></button>
           <div class="topbar-title">
             <p class="eyebrow" id="today-text"></p>
             <h1 id="view-title">我的账本</h1>
@@ -65,82 +60,63 @@
           </div>
           <div class="topbar-actions">
             <span class="sync-badge" id="sync-badge"><span></span>未同步</span>
-            <button class="icon-button" id="quick-add-button" type="button" title="记一笔" aria-label="记一笔">＋</button>
+            <button class="plain-icon-button top-search-button" data-view-link="search" type="button" title="搜索账目" aria-label="搜索账目"><i data-lucide="search"></i></button>
+            <button class="icon-button" id="quick-add-button" type="button" title="记一笔" aria-label="记一笔"><i data-lucide="plus"></i></button>
           </div>
         </header>
 
         <section class="view is-active" id="view-home" aria-labelledby="view-title">
-          <div class="summary-grid">
-            <article class="summary-card summary-balance">
-              <span>账户总余额</span>
+          <article class="ledger-hero">
+            <div class="ledger-hero-main">
+              <span>账户净资产</span>
               <strong id="total-balance">¥0.00</strong>
               <small id="account-count">0 个账户</small>
-            </article>
-            <article class="summary-card">
-              <span>本月收入</span>
-              <strong class="income-text" id="month-income">¥0.00</strong>
-              <small id="income-count">0 笔收入</small>
-            </article>
-            <article class="summary-card">
-              <span>本月支出</span>
-              <strong class="expense-text" id="month-expense">¥0.00</strong>
-              <small id="expense-count">0 笔支出</small>
-            </article>
-            <article class="summary-card budget-card">
-              <div class="summary-card-row">
-                <span>月预算</span>
-                <span id="budget-percent">0%</span>
-              </div>
-              <strong id="budget-remaining">剩余 ¥0.00</strong>
+            </div>
+            <div class="ledger-hero-metrics">
+              <span><small>本月收入</small><strong id="month-income">¥0.00</strong><em id="income-count">0 笔</em></span>
+              <span><small>本月支出</small><strong id="month-expense">¥0.00</strong><em id="expense-count">0 笔</em></span>
+            </div>
+            <div class="ledger-budget">
+              <div><span id="budget-remaining">尚未设置预算</span><small><b id="budget-percent">未设置</b> · <span id="budget-total">预算 ¥0.00</span></small></div>
               <div class="progress-track"><span id="budget-progress"></span></div>
-              <small id="budget-total">预算 ¥0.00</small>
-            </article>
-          </div>
+            </div>
+          </article>
 
-          <div class="home-grid">
-            <section class="panel quick-record-panel">
-              <div class="section-heading">
-                <div>
-                  <p class="eyebrow">自然语言记账</p>
-                  <h2>今天发生了什么？</h2>
-                </div>
-                <span class="local-chip">本地解析</span>
-              </div>
-              <form id="quick-record-form">
-                <label class="sr-only" for="quick-record-input">描述一笔收支</label>
-                <textarea id="quick-record-input" rows="3" placeholder="例如：昨天午饭微信花了 38 元"></textarea>
-                <div class="composer-footer">
-                  <span id="parse-hint">可识别金额、分类、账户和日期</span>
-                  <div class="composer-actions"><button class="secondary-button" id="voice-record-button" type="button">语音输入</button><button class="primary-button" type="submit">解析并确认</button></div>
-                </div>
-              </form>
-            </section>
-
-            <section class="panel month-pulse">
-              <div class="section-heading compact">
-                <div>
-                  <p class="eyebrow">本月节奏</p>
-                  <h2>每日支出</h2>
-                </div>
-                <strong id="daily-average">日均 ¥0.00</strong>
-              </div>
-              <div class="mini-chart" id="daily-chart" aria-label="本月每日支出图"></div>
-            </section>
+          <div class="home-quick-links" aria-label="快捷入口">
+            <button type="button" data-view-link="plans"><i data-lucide="circle-dollar-sign"></i><span>预算计划</span></button>
+            <button type="button" data-view-link="settings" data-settings-panel="automation"><i data-lucide="scan-line"></i><span>自动记账</span></button>
+            <button type="button" data-view-link="search"><i data-lucide="search"></i><span>查找账目</span></button>
+            <button type="button" data-view-link="settings" data-settings-panel="data"><i data-lucide="cloud"></i><span>数据备份</span></button>
           </div>
 
           <section class="transactions-section">
             <div class="section-heading">
               <div>
-                <p class="eyebrow">账目流水</p>
-                <h2>最近记录</h2>
+                <p class="eyebrow">当前账本</p>
+                <h2>最近明细</h2>
               </div>
-              <button class="text-button" type="button" data-view-link="record">手动记账</button>
+              <button class="text-button" type="button" data-view-link="search">查看全部</button>
             </div>
             <div class="transaction-list" id="recent-transactions"></div>
           </section>
         </section>
 
         <section class="view" id="view-record" aria-labelledby="view-title">
+          <section class="quick-capture-panel">
+            <div class="quick-capture-heading">
+              <span class="quick-capture-icon"><i data-lucide="sparkles"></i></span>
+              <div><strong>一句话记账</strong><small>金额、分类、账户和日期在本机识别</small></div>
+              <span class="local-chip">本地</span>
+            </div>
+            <form id="quick-record-form" class="quick-capture-form">
+              <label class="sr-only" for="quick-record-input">描述一笔收支</label>
+              <textarea id="quick-record-input" rows="2" placeholder="例如：昨天午饭微信花了 38 元"></textarea>
+              <div class="composer-footer">
+                <span id="parse-hint">保存前会弹出结果供你确认</span>
+                <div class="composer-actions"><button class="plain-icon-button voice-button" id="voice-record-button" type="button" title="语音输入" aria-label="语音输入"><i data-lucide="mic"></i></button><button class="primary-button" type="submit">识别账目</button></div>
+              </div>
+            </form>
+          </section>
           <div class="record-layout">
             <section class="panel manual-panel">
               <div class="section-heading">
@@ -171,15 +147,6 @@
                   <span class="amount-input-wrap"><b>¥</b><input id="transaction-amount" type="number" min="0.01" step="0.01" inputmode="decimal" required placeholder="0.00" /></span>
                 </label>
                 <label class="field">
-                  <span>币种</span>
-                  <select id="transaction-currency"></select>
-                </label>
-                <label class="field">
-                  <span>折算汇率</span>
-                  <input id="transaction-exchange-rate" type="number" min="0.000001" step="0.000001" required />
-                </label>
-
-                <label class="field">
                   <span>分类</span>
                   <select id="transaction-category" required></select>
                 </label>
@@ -195,43 +162,26 @@
                   <span>日期</span>
                   <input id="transaction-date" type="date" required />
                 </label>
-                <label class="field">
-                  <span>时间</span>
-                  <input id="transaction-time" type="time" required />
-                </label>
-                <label class="field">
-                  <span>记录状态</span>
-                  <select id="transaction-status">
-                    <option value="posted">已入账</option>
-                    <option value="pending">待处理</option>
-                  </select>
-                </label>
-                <label class="field">
-                  <span>报销状态</span>
-                  <select id="transaction-reimburse-status">
-                    <option value="none">不报销</option>
-                    <option value="pending">待报销</option>
-                    <option value="reimbursed">已报销</option>
-                  </select>
-                </label>
-                <label class="field">
-                  <span>成员</span>
-                  <select id="transaction-member"></select>
-                </label>
-                <label class="field">
-                  <span>商家</span>
-                  <select id="transaction-merchant"></select>
-                </label>
-                <fieldset class="field full-width option-fieldset">
-                  <legend>标签</legend>
-                  <div class="choice-list" id="transaction-tags"></div>
-                </fieldset>
-                <label class="field full-width"><span>照片附件</span><input id="transaction-photos" type="file" accept="image/*" multiple /><small class="field-note" id="transaction-photo-status">未选择照片</small></label>
-                <div class="location-row full-width"><button class="secondary-button" id="capture-location" type="button">记录当前位置</button><span id="transaction-location-status">未记录位置</span></div>
                 <label class="field full-width">
                   <span>备注</span>
                   <input id="transaction-note" type="text" maxlength="80" placeholder="可选，例如：团队午餐" />
                 </label>
+
+                <details class="record-advanced full-width">
+                  <summary><span>更多选项</span><small>币种、报销、成员、标签和附件</small><i data-lucide="chevron-right"></i></summary>
+                  <div class="record-advanced-grid">
+                    <label class="field"><span>币种</span><select id="transaction-currency"></select></label>
+                    <label class="field"><span>折算汇率</span><input id="transaction-exchange-rate" type="number" min="0.000001" step="0.000001" required /></label>
+                    <label class="field"><span>时间</span><input id="transaction-time" type="time" required /></label>
+                    <label class="field"><span>记录状态</span><select id="transaction-status"><option value="posted">已入账</option><option value="pending">待处理</option></select></label>
+                    <label class="field"><span>报销状态</span><select id="transaction-reimburse-status"><option value="none">不报销</option><option value="pending">待报销</option><option value="reimbursed">已报销</option></select></label>
+                    <label class="field"><span>成员</span><select id="transaction-member"></select></label>
+                    <label class="field"><span>商家</span><select id="transaction-merchant"></select></label>
+                    <fieldset class="field full-width option-fieldset"><legend>标签</legend><div class="choice-list" id="transaction-tags"></div></fieldset>
+                    <label class="field full-width"><span>照片附件</span><input id="transaction-photos" type="file" accept="image/*" multiple /><small class="field-note" id="transaction-photo-status">未选择照片</small></label>
+                    <div class="location-row full-width"><button class="secondary-button" id="capture-location" type="button">记录当前位置</button><span id="transaction-location-status">未记录位置</span></div>
+                  </div>
+                </details>
 
                 <div class="record-submit-actions full-width"><button class="secondary-button" id="save-template-button" type="button">存为模板</button><button class="primary-button submit-transaction" type="submit">保存这笔账</button></div>
               </form>
@@ -260,6 +210,52 @@
           </div>
         </section>
 
+        <section class="view" id="view-accounts" aria-labelledby="view-title">
+          <article class="account-hero">
+            <div><span>净资产</span><strong id="accounts-net-total">¥0.00</strong><small id="accounts-updated-text">按当前账本账户统计</small></div>
+            <div class="account-hero-metrics">
+              <span><small>资产</small><strong id="accounts-asset-total">¥0.00</strong></span>
+              <span><small>负债</small><strong id="accounts-liability-total">¥0.00</strong></span>
+            </div>
+          </article>
+
+          <section class="account-directory">
+            <div class="section-heading compact">
+              <div><p class="eyebrow">账户资产</p><h2>全部账户</h2></div>
+              <span class="count-label" id="account-total">0 个</span>
+            </div>
+            <div class="account-manage-list" id="account-list"></div>
+          </section>
+
+          <details class="management-disclosure">
+            <summary><span><i data-lucide="plus"></i>新增账户</span><small>现金、银行卡、信用账户等</small></summary>
+            <form class="add-account-form" id="account-form">
+              <input id="new-account-name" type="text" maxlength="16" placeholder="账户名称" required />
+              <select id="new-account-type" aria-label="账户类型">
+                <option value="cash">现金</option>
+                <option value="wallet">电子钱包</option>
+                <option value="bank">银行卡</option>
+                <option value="credit">信用账户</option>
+                <option value="asset">资产</option>
+                <option value="liability">负债</option>
+              </select>
+              <select id="new-account-currency" aria-label="账户币种"></select>
+              <input id="new-account-balance" type="number" step="0.01" placeholder="初始余额" required />
+              <fieldset class="choice-list account-book-choices" id="new-account-books"><legend>适用账本</legend></fieldset>
+              <div class="account-credit-fields is-hidden" id="account-credit-fields">
+                <input id="new-account-credit-limit" type="number" min="0" step="100" placeholder="信用额度" />
+                <input id="new-account-billing-day" type="number" min="1" max="31" placeholder="账单日" />
+                <label class="check-row account-credit-check"><input id="new-account-billing-day-next" type="checkbox" /><span>账单日消费计入下期</span></label>
+                <select id="new-account-repayment-type" aria-label="还款日类型"><option value="fixed">固定还款日</option><option value="delay">账单日后间隔</option></select>
+                <input id="new-account-repayment-day" type="number" min="1" max="31" placeholder="还款日" />
+                <input class="is-hidden" id="new-account-repayment-delay" type="number" min="1" max="60" placeholder="还款间隔天数" />
+                <select id="new-account-shared-limit" aria-label="额度共享"><option value="">独立额度</option></select>
+              </div>
+              <button class="primary-button" type="submit"><i data-lucide="plus"></i>新增账户</button>
+            </form>
+          </details>
+        </section>
+
         <section class="view" id="view-stats" aria-labelledby="view-title">
           <div class="stats-toolbar">
             <label class="field inline-field"><span>统计月份</span><input id="stats-month" type="month" /></label>
@@ -270,6 +266,10 @@
             <div><span>结余</span><strong id="stats-net">¥0.00</strong></div>
           </div>
           <div class="stats-grid">
+            <section class="panel month-pulse">
+              <div class="section-heading compact"><div><p class="eyebrow">本月节奏</p><h2>每日支出</h2></div><strong id="daily-average">日均 ¥0.00</strong></div>
+              <div class="mini-chart" id="daily-chart" aria-label="本月每日支出图"></div>
+            </section>
             <section class="panel">
               <div class="section-heading compact"><div><p class="eyebrow">支出结构</p><h2>分类占比</h2></div></div>
               <div class="category-stats" id="category-stats"></div>
@@ -315,7 +315,7 @@
               <div class="plan-list" id="goal-list"></div>
             </section>
 
-            <section class="panel">
+            <section class="panel" id="schedule-section">
               <div class="section-heading compact"><div><p class="eyebrow">固定收支</p><h2>周期账</h2></div></div>
               <form id="schedule-form" class="plan-form detailed">
                 <input id="schedule-name" type="text" maxlength="20" placeholder="名称" required />
@@ -344,7 +344,7 @@
             </section>
           </div>
 
-          <section class="transactions-section">
+          <section class="transactions-section" id="settlement-section">
             <div class="section-heading compact">
               <div><p class="eyebrow">资金回收</p><h2>待报销</h2></div>
               <button class="secondary-button compact-button" id="batch-reimbursement" type="button">确认报销</button>
@@ -415,16 +415,21 @@
         </section>
 
         <section class="view" id="view-settings" aria-labelledby="view-title">
+          <nav class="settings-tabs" aria-label="设置分组">
+            <button class="is-active" data-settings-tab="ledger" type="button"><i data-lucide="sliders-horizontal"></i><span>账本设置</span></button>
+            <button data-settings-tab="automation" type="button"><i data-lucide="shield-check"></i><span>自动与安全</span></button>
+            <button data-settings-tab="data" type="button"><i data-lucide="database"></i><span>备份数据</span></button>
+          </nav>
           <div class="settings-grid">
-            <section class="panel">
+            <section class="panel settings-panel is-active" data-settings-view="ledger">
               <div class="section-heading compact"><div><p class="eyebrow">账本偏好</p><h2>预算与基础数据</h2></div></div>
               <form id="budget-form" class="inline-form">
                 <label class="field"><span>每月支出预算</span><input id="monthly-budget" type="number" min="0" step="100" required /></label>
                 <button class="secondary-button" type="submit">保存预算</button>
               </form>
 
-              <div class="manage-block">
-                <div class="manage-heading"><h3>分类</h3><span id="category-total"></span></div>
+              <details class="manage-block settings-disclosure">
+                <summary class="manage-heading"><h3>分类</h3><span id="category-total"></span><i data-lucide="chevron-right"></i></summary>
                 <div class="tag-list" id="category-list"></div>
                 <form class="add-item-form" id="category-form">
                   <input id="new-category-name" type="text" maxlength="12" placeholder="新增分类名称" required />
@@ -436,68 +441,37 @@
                   <input id="new-category-color" type="color" value="#d87945" title="选择分类颜色" aria-label="选择分类颜色" />
                   <button class="icon-button small" type="submit" title="新增分类" aria-label="新增分类">＋</button>
                 </form>
-              </div>
+              </details>
 
-              <div class="manage-block">
-                <div class="manage-heading"><h3>账户</h3><span id="account-total"></span></div>
-                <div class="account-manage-list" id="account-list"></div>
-                <form class="add-account-form" id="account-form">
-                  <input id="new-account-name" type="text" maxlength="16" placeholder="账户名称" required />
-                  <select id="new-account-type" aria-label="账户类型">
-                    <option value="cash">现金</option>
-                    <option value="wallet">电子钱包</option>
-                    <option value="bank">银行卡</option>
-                    <option value="credit">信用账户</option>
-                    <option value="asset">资产</option>
-                    <option value="liability">负债</option>
-                  </select>
-                  <select id="new-account-currency" aria-label="账户币种"></select>
-                  <input id="new-account-balance" type="number" step="0.01" placeholder="初始余额" required />
-                  <fieldset class="choice-list account-book-choices" id="new-account-books">
-                    <legend>适用账本</legend>
-                  </fieldset>
-                  <div class="account-credit-fields is-hidden" id="account-credit-fields">
-                    <input id="new-account-credit-limit" type="number" min="0" step="100" placeholder="信用额度" />
-                    <input id="new-account-billing-day" type="number" min="1" max="31" placeholder="账单日" />
-                    <label class="check-row account-credit-check"><input id="new-account-billing-day-next" type="checkbox" /><span>账单日消费计入下期</span></label>
-                    <select id="new-account-repayment-type" aria-label="还款日类型"><option value="fixed">固定还款日</option><option value="delay">账单日后间隔</option></select>
-                    <input id="new-account-repayment-day" type="number" min="1" max="31" placeholder="还款日" />
-                    <input class="is-hidden" id="new-account-repayment-delay" type="number" min="1" max="60" placeholder="还款间隔天数" />
-                    <select id="new-account-shared-limit" aria-label="额度共享"><option value="">独立额度</option></select>
-                  </div>
-                  <button class="icon-button small" type="submit" title="新增账户" aria-label="新增账户">＋</button>
-                </form>
-              </div>
-
-              <div class="manage-block">
-                <div class="manage-heading"><h3>成员</h3><span id="member-total"></span></div>
+              <details class="manage-block settings-disclosure">
+                <summary class="manage-heading"><h3>成员</h3><span id="member-total"></span><i data-lucide="chevron-right"></i></summary>
                 <div class="tag-list" id="member-list"></div>
                 <form class="add-simple-form" id="member-form">
                   <input id="new-member-name" type="text" maxlength="12" placeholder="成员名称" required />
                   <button class="icon-button small" type="submit" title="新增成员" aria-label="新增成员">＋</button>
                 </form>
-              </div>
+              </details>
 
-              <div class="manage-block">
-                <div class="manage-heading"><h3>标签</h3><span id="tag-total"></span></div>
+              <details class="manage-block settings-disclosure">
+                <summary class="manage-heading"><h3>标签</h3><span id="tag-total"></span><i data-lucide="chevron-right"></i></summary>
                 <div class="tag-list" id="tag-list"></div>
                 <form class="add-simple-form" id="tag-form">
                   <input id="new-tag-name" type="text" maxlength="12" placeholder="标签名称" required />
                   <button class="icon-button small" type="submit" title="新增标签" aria-label="新增标签">＋</button>
                 </form>
-              </div>
+              </details>
 
-              <div class="manage-block">
-                <div class="manage-heading"><h3>商家</h3><span id="merchant-total"></span></div>
+              <details class="manage-block settings-disclosure">
+                <summary class="manage-heading"><h3>商家</h3><span id="merchant-total"></span><i data-lucide="chevron-right"></i></summary>
                 <div class="tag-list" id="merchant-list"></div>
                 <form class="add-simple-form" id="merchant-form">
                   <input id="new-merchant-name" type="text" maxlength="20" placeholder="商家名称" required />
                   <button class="icon-button small" type="submit" title="新增商家" aria-label="新增商家">＋</button>
                 </form>
-              </div>
+              </details>
 
-              <div class="manage-block">
-                <div class="manage-heading"><h3>币种</h3><span id="currency-total"></span></div>
+              <details class="manage-block settings-disclosure">
+                <summary class="manage-heading"><h3>币种</h3><span id="currency-total"></span><i data-lucide="chevron-right"></i></summary>
                 <div class="tag-list" id="currency-list"></div>
                 <form class="currency-form" id="currency-form">
                   <input id="new-currency-code" type="text" minlength="3" maxlength="3" placeholder="代码 USD" required />
@@ -506,10 +480,13 @@
                   <input id="new-currency-rate" type="number" min="0.000001" step="0.000001" placeholder="兑人民币汇率" required />
                   <button class="icon-button small" type="submit" title="新增币种" aria-label="新增币种">＋</button>
                 </form>
-              </div>
+              </details>
+            </section>
 
-              <div class="manage-block">
-                <div class="manage-heading"><h3>应用锁</h3><span id="app-lock-status">未开启</span></div>
+            <section class="panel settings-panel" data-settings-view="automation">
+              <div class="section-heading compact"><div><p class="eyebrow">系统能力</p><h2>自动记账与安全</h2></div></div>
+              <details class="manage-block settings-disclosure">
+                <summary class="manage-heading"><h3>应用锁</h3><span id="app-lock-status">未开启</span><i data-lucide="chevron-right"></i></summary>
                 <form class="lock-settings-form" id="app-lock-form">
                   <input id="current-pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" maxlength="8" placeholder="当前 PIN（更换时填写）" />
                   <input id="new-pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" maxlength="8" placeholder="新 PIN，4 至 8 位" required />
@@ -523,10 +500,10 @@
                   <button class="secondary-button" type="submit">保存应用锁</button>
                   <button class="text-button" id="clear-app-lock" type="button">关闭应用锁</button>
                 </form>
-              </div>
+              </details>
 
-              <div class="manage-block">
-                <div class="manage-heading"><h3>自动记账候选</h3><span id="auto-booking-status">未授权</span></div>
+              <details class="manage-block settings-disclosure" open>
+                <summary class="manage-heading"><h3>自动记账候选</h3><span id="auto-booking-status">未授权</span><i data-lucide="chevron-right"></i></summary>
                 <div class="data-actions auto-booking-actions">
                   <button class="secondary-button" id="open-notification-access" type="button">通知使用权</button>
                   <button class="secondary-button" id="open-accessibility-access" type="button">无障碍设置</button>
@@ -534,10 +511,10 @@
                   <button class="secondary-button" id="load-sms-candidates" type="button">读取短信候选</button>
                 </div>
                 <div class="plan-list" id="auto-booking-list"></div>
-              </div>
+              </details>
             </section>
 
-            <section class="panel sync-panel">
+            <section class="panel sync-panel settings-panel" data-settings-view="data">
               <div class="section-heading">
                 <div><p class="eyebrow">坚果云 WebDAV</p><h2>加密同步</h2></div>
                 <span class="security-chip">AES-GCM</span>
@@ -580,6 +557,13 @@
           </div>
         </section>
       </main>
+
+      <nav class="bottom-nav" aria-label="主导航">
+        <button class="nav-item is-active" data-view="home" type="button"><i data-lucide="home"></i><span>首页</span></button>
+        <button class="nav-item" data-view="accounts" type="button"><i data-lucide="wallet-cards"></i><span>账户</span></button>
+        <button class="nav-item" data-view="stats" type="button"><i data-lucide="chart-pie"></i><span>报表</span></button>
+      </nav>
+      <button class="record-fab" id="mobile-add-button" type="button" title="记一笔" aria-label="记一笔"><i data-lucide="plus"></i></button>
     </div>
 
     <dialog id="parse-dialog">

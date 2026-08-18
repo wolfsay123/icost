@@ -5,10 +5,10 @@
 - 文件：`release/zhiji-android-debug.apk`
 - 应用名：智记
 - 包名：`com.zhiji.local`
-- 版本：`0.7.0`（versionCode 6）
+- 版本：`0.8.0`（versionCode 7）
 - 最低系统：Android 7.0（API 24）
-- 文件大小：11,677,815 bytes
-- SHA-256：`fc2f6832481d69807f8bc9198bdd8f1f39def7c496f974eb9030f300e0874419`
+- 文件大小：11,689,523 bytes
+- SHA-256：`2e2accf646c80a8e52ec25fd53746e40b8cd96f08986454bd878c2a7794d950c`
 
 这是供个人试用的 Debug APK，使用 Android SDK 调试证书签名，不用于应用商店发布。升级时需继续使用同一签名；若手机上存在不同签名的同包名版本，应先备份数据再卸载旧版。
 
@@ -65,7 +65,7 @@ Gradle 原始 APK 位于 `android/app/build/outputs/apk/debug/app-debug.apk`，�
 - Android Emulator 37.1.11 官方包：394,555,844 bytes，SHA-1 `f22f44948a2b7f0a0103645b9a639290eef92426`。
 - API 24 AOSP ARM64 官方镜像：305,854,153 bytes，SHA-1 `e88ebdf4533efa0370603ee4ab0e7834e0cc364f`。
 - 2026-08-18 下载多次被 Google 官方 CDN 限速至约 0.05-0.2 MB/s，组件尚未完整安装；本次没有模拟器安装/启动证据，不能把 APK 构建与浏览器测试表述为 Android 动态验收。
-- 当前 `adb devices` 未发现已授权设备，因此 0.7.0 尚未直接安装到用户手机，微信/支付宝真实结果页识别仍待真机验证。
+- 当前 `adb devices` 未发现已授权设备，因此 0.8.0 尚未直接安装到用户手机，新版 UI 与微信/支付宝真实结果页识别仍待真机验证。
 
 网络恢复后可继续使用 SDK 管理器安装：
 

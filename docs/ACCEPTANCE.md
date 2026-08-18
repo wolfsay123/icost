@@ -23,10 +23,13 @@
 - 应用锁错误 PIN 被拒绝，正确 PIN 可解锁；本地状态只保存 PBKDF2 派生值和盐，不保存明文 PIN。
 - 自动候选解析单元测试覆盖微信支出、支付宝收款/退款、操作页与无结果页拒绝、敏感文本脱敏、通知与无障碍跨通道去重，共 5/5 通过。
 - 浏览器移动端实测：启动自动弹出微信候选，确认后只生成一笔带候选 ID 的交易；第二条支付宝候选取消后仍保留，忽略后移除；重新注入首条候选不会重复入账，横向溢出为 0，控制台无错误。
+- 0.8.0 UI 实测底部仅保留首页、账户、报表三个主入口，功能抽屉可进入自动记账、计划、周期分期、报销往来、搜索、账本、设置和备份；抽屉关闭后焦点页面正确。
+- 账户页显示净资产、资产、负债与完整账户操作；设置页三个分组互斥显示，分类/成员/标签/商家/币种折叠后不再形成连续长页面；记账高级字段默认折叠但仍可编辑。
+- 375x812、412x915、1440x1000 均完成新增 `12.50` 元测试支出、返回首页、日期分组显示和三主入口切换；三种尺寸横向溢出均为 0，浏览器控制台无错误。
 - 375x812 与 1440x1000 最新 v5 存钱计划流程横向溢出均为 0；计划金额、下一期和操作区可读，浏览器控制台无错误。
 - `npm run check` 为 29/29；`npm audit --json` 为 0 个已知漏洞。
 - 已知未闭环：信用提醒/支付推荐及 P1/P2 功能仍在差距矩阵中；目标 APK 未完成动态操作对照，不得据此宣称所有功能和隐藏边界完全一致。
-- APK 0.7.0 构建成功、v2 签名有效；包名 `com.zhiji.local`、versionCode 6、最低 API 24、目标 API 36 均从 APK 本体独立确认。
+- APK 0.8.0 构建成功、v2 签名有效；包名 `com.zhiji.local`、versionCode 7、最低 API 24、目标 API 36 均从 APK 本体独立确认。
 
 ## 验收边界
 
@@ -46,3 +49,8 @@
 - `docs/screenshots/acceptance-v5-savings-mobile.png`
 - `docs/screenshots/acceptance-v5-savings-desktop.png`
 - `docs/screenshots/acceptance-v6-auto-booking-mobile.png`
+- `docs/screenshots/acceptance-v8-home-mobile.png`
+- `docs/screenshots/acceptance-v8-drawer-mobile.png`
+- `docs/screenshots/acceptance-v8-accounts-mobile.png`
+- `docs/screenshots/acceptance-v8-settings-mobile.png`
+- `docs/screenshots/acceptance-v8-home-desktop.png`
