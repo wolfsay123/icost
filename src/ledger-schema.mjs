@@ -1,5 +1,5 @@
 export const STORAGE_KEY = "zhiji.local.v1";
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 5;
 export const DEFAULT_BOOK_ID = "book-default";
 export const DEFAULT_CURRENCY = "CNY";
 
@@ -47,6 +47,7 @@ const ARRAY_COLLECTIONS = [
   "schedules",
   "installments",
   "templates",
+  "importBatches",
   "recycleBin",
 ];
 
@@ -104,14 +105,22 @@ export function createDefaultLedger(now = new Date().toISOString()) {
     })),
     accounts: DEFAULT_ACCOUNTS.map((item, order) => ({
       ...item,
+      bookIds: [DEFAULT_BOOK_ID],
       currencyCode: DEFAULT_CURRENCY,
       includeInNetAssets: true,
       hidden: false,
       order,
       credit: null,
+      expiresAt: null,
+      expiryReminderEnabled: false,
+      balanceReminder: null,
       deletedAt: null,
     })),
     transactions: [],
+    refunds: [],
+    settlements: [],
+    reimbursements: [],
+    savingsPlans: [],
     members: [],
     tagGroups: [],
     tags: [],
@@ -121,6 +130,7 @@ export function createDefaultLedger(now = new Date().toISOString()) {
     schedules: [],
     installments: [],
     templates: [],
+    importBatches: [],
     currencies: [{ code: DEFAULT_CURRENCY, name: "人民币", symbol: "¥", rate: 1 }],
     recycleBin: [],
     metadata: {
@@ -182,11 +192,35 @@ export function normalizeLedger(raw, now = new Date().toISOString()) {
         name: String(item.name),
         type: accountType(item),
         initialBalance: finiteNumber(item.initialBalance),
+        bookIds: Array.isArray(item.bookIds) && item.bookIds.length
+          ? [...new Set(item.bookIds.filter((bookId) => books.some((book) => book.id === bookId)))]
+          : books.map((book) => book.id),
         currencyCode: item.currencyCode || raw.baseCurrency || DEFAULT_CURRENCY,
         includeInNetAssets: item.includeInNetAssets !== false,
         hidden: Boolean(item.hidden),
         order: finiteNumber(item.order, order),
-        credit: item.credit && typeof item.credit === "object" ? item.credit : null,
+        credit: item.credit && typeof item.credit === "object" ? {
+          ...item.credit,
+          limit: Math.max(0, finiteNumber(item.credit.limit)),
+          billingDay: item.credit.billingDay == null ? null : finiteNumber(item.credit.billingDay),
+          billingDayInNextCycle: Boolean(item.credit.billingDayInNextCycle),
+          repaymentType: item.credit.repaymentType === "delay" ? "delay" : "fixed",
+          repaymentDay: item.credit.repaymentDay == null ? null : finiteNumber(item.credit.repaymentDay),
+          repaymentDelayDays: item.credit.repaymentDelayDays == null
+            ? null
+            : Math.max(0, finiteNumber(item.credit.repaymentDelayDays)),
+          sharedLimitAccountId: item.credit.sharedLimitAccountId || null,
+          repaymentReminderDays: Array.isArray(item.credit.repaymentReminderDays)
+            ? item.credit.repaymentReminderDays.filter((day) => Number.isInteger(day) && day >= 0)
+            : [],
+        } : null,
+        expiresAt: item.expiresAt || null,
+        expiryReminderEnabled: Boolean(item.expiryReminderEnabled),
+        balanceReminder: item.balanceReminder && typeof item.balanceReminder === "object" ? {
+          enabled: Boolean(item.balanceReminder.enabled),
+          direction: item.balanceReminder.direction === "above" ? "above" : "below",
+          amount: Math.max(0, finiteNumber(item.balanceReminder.amount)),
+        } : null,
         deletedAt: item.deletedAt || null,
       }))
     : [];
@@ -218,10 +252,158 @@ export function normalizeLedger(raw, now = new Date().toISOString()) {
         photos: Array.isArray(item.photos) ? item.photos : [],
         location: item.location && typeof item.location === "object" ? item.location : null,
         linkedTransactionId: item.linkedTransactionId || null,
+        relationGroupId: item.relationGroupId || null,
+        reimbursementId: item.reimbursementId || null,
+        savingsPlanId: item.savingsPlanId || null,
+        savingsPlanPeriod: item.savingsPlanPeriod == null ? null : finiteNumber(item.savingsPlanPeriod),
+        autoBookingCandidateId: item.autoBookingCandidateId || null,
+        importBatchId: item.importBatchId || null,
+        generatedBy: item.generatedBy && typeof item.generatedBy === "object" ? item.generatedBy : null,
         reconciled: Boolean(item.reconciled),
         deletedAt: item.deletedAt || null,
       }))
     : [];
+
+  const refunds = Array.isArray(raw.refunds)
+    ? raw.refunds.filter((item) => (
+        validEntity(item)
+        && item.transactionId
+        && item.accountId
+        && finiteNumber(item.amount) > 0
+        && item.date
+      )).map((item) => ({
+        ...item,
+        amount: finiteNumber(item.amount),
+        accountAmount: finiteNumber(item.accountAmount, finiteNumber(item.amount)),
+        currencyCode: item.currencyCode || raw.baseCurrency || DEFAULT_CURRENCY,
+        exchangeRate: finiteNumber(item.exchangeRate, 1) || 1,
+        time: item.time || "12:00",
+        note: String(item.note || ""),
+        deletedAt: item.deletedAt || null,
+      }))
+    : [];
+
+  const settlements = Array.isArray(raw.settlements)
+    ? raw.settlements.filter((item) => (
+        validEntity(item)
+        && Array.isArray(item.sourceTransactionIds)
+        && item.sourceTransactionIds.length
+        && item.transactionId
+        && finiteNumber(item.amount) > 0
+      )).map((item) => ({
+        ...item,
+        sourceTransactionIds: [...new Set(item.sourceTransactionIds.filter(Boolean))],
+        amount: finiteNumber(item.amount),
+        allocations: item.allocations && typeof item.allocations === "object"
+          ? Object.fromEntries(Object.entries(item.allocations)
+            .filter(([id, amount]) => id && finiteNumber(amount) > 0)
+            .map(([id, amount]) => [id, finiteNumber(amount)]))
+          : null,
+        deletedAt: item.deletedAt || null,
+      }))
+    : [];
+
+  const reimbursements = Array.isArray(raw.reimbursements)
+    ? raw.reimbursements.filter((item) => (
+        validEntity(item)
+        && Array.isArray(item.sourceTransactionIds)
+        && item.sourceTransactionIds.length
+        && item.transactionId
+        && finiteNumber(item.expectedAmount) > 0
+        && finiteNumber(item.actualAmount) > 0
+      )).map((item) => ({
+        ...item,
+        sourceTransactionIds: [...new Set(item.sourceTransactionIds.filter(Boolean))],
+        accountId: item.accountId || null,
+        expectedAmount: finiteNumber(item.expectedAmount),
+        actualAmount: finiteNumber(item.actualAmount),
+        receiptAmount: finiteNumber(item.receiptAmount, finiteNumber(item.expectedAmount)),
+        differenceAmount: Math.max(0, finiteNumber(item.differenceAmount)),
+        differenceType: ["income", "expense"].includes(item.differenceType) ? item.differenceType : null,
+        differenceTransactionId: item.differenceTransactionId || null,
+        allocations: item.allocations && typeof item.allocations === "object"
+          ? Object.fromEntries(Object.entries(item.allocations)
+            .filter(([id, amount]) => id && finiteNumber(amount) > 0)
+            .map(([id, amount]) => [id, finiteNumber(amount)]))
+          : null,
+        currencyCode: item.currencyCode || raw.baseCurrency || DEFAULT_CURRENCY,
+        exchangeRate: finiteNumber(item.exchangeRate, 1) || 1,
+        date: item.date || now.slice(0, 10),
+        note: String(item.note || ""),
+        deletedAt: item.deletedAt || null,
+      }))
+    : [];
+
+  const savingsPlans = Array.isArray(raw.savingsPlans)
+    ? raw.savingsPlans.filter((item) => (
+        validEntity(item)
+        && item.name
+        && item.sourceAccountId
+        && item.targetAccountId
+        && item.startDate
+        && finiteNumber(item.totalPeriods) > 0
+        && finiteNumber(item.startAmount) > 0
+      )).map((item) => ({
+        ...item,
+        bookId: item.bookId || activeBookId,
+        name: String(item.name),
+        template: ["daily365", "weekly52", "monthlyFixed", "custom"].includes(item.template) ? item.template : "custom",
+        sourceAccountId: item.sourceAccountId,
+        targetAccountId: item.targetAccountId,
+        currencyCode: item.currencyCode || raw.baseCurrency || DEFAULT_CURRENCY,
+        startDate: item.startDate,
+        frequency: ["daily", "weekly", "monthly"].includes(item.frequency) ? item.frequency : "monthly",
+        totalPeriods: Math.min(1000, Math.max(1, Math.trunc(finiteNumber(item.totalPeriods, 1)))),
+        startAmount: Math.max(0.01, finiteNumber(item.startAmount, 0.01)),
+        incrementAmount: Math.max(0, finiteNumber(item.incrementAmount)),
+        targetAmount: Math.max(0.01, finiteNumber(item.targetAmount, finiteNumber(item.startAmount, 0.01))),
+        status: item.status === "paused" ? "paused" : "active",
+        deletedAt: item.deletedAt || null,
+        createdAt: item.createdAt || now,
+      }))
+    : [];
+
+  if (sourceVersion < 4) {
+    const migratedSourceIds = new Set(reimbursements.flatMap((item) => item.sourceTransactionIds));
+    transactions.filter((item) => (
+      item.type === "expense"
+      && item.reimburseStatus === "reimbursed"
+      && item.linkedTransactionId
+      && !migratedSourceIds.has(item.id)
+    )).forEach((source) => {
+      const receipt = transactions.find((item) => item.id === source.linkedTransactionId && item.type === "income");
+      if (!receipt) return;
+      const id = `reimbursement-migrated-${source.id}`;
+      const expectedAmount = finiteNumber(source.amount);
+      const actualAmount = finiteNumber(receipt.amount, expectedAmount);
+      const difference = actualAmount - expectedAmount;
+      reimbursements.push({
+        id,
+        sourceTransactionIds: [source.id],
+        accountId: receipt.accountId,
+        expectedAmount,
+        actualAmount,
+        receiptAmount: expectedAmount,
+        differenceAmount: Math.abs(difference),
+        differenceType: difference > 0 ? "income" : difference < 0 ? "expense" : null,
+        transactionId: receipt.id,
+        differenceTransactionId: null,
+        allocations: { [source.id]: expectedAmount },
+        currencyCode: receipt.currencyCode,
+        exchangeRate: receipt.exchangeRate,
+        date: receipt.date,
+        note: receipt.note,
+        deletedAt: null,
+        createdAt: receipt.createdAt || now,
+      });
+      source.reimbursementId = id;
+      source.relationGroupId = id;
+      receipt.reimbursementId = id;
+      receipt.relationGroupId = id;
+      receipt.generatedBy = { kind: "reimbursement", reimbursementId: id };
+      migratedSourceIds.add(source.id);
+    });
+  }
 
   const monthlyBudget = finiteNumber(raw.settings?.monthlyBudget, fallback.settings.monthlyBudget);
   const state = {
@@ -238,6 +420,10 @@ export function normalizeLedger(raw, now = new Date().toISOString()) {
     categories: categories.length ? categories : fallback.categories,
     accounts: accounts.length ? accounts : fallback.accounts,
     transactions,
+    refunds,
+    settlements,
+    reimbursements,
+    savingsPlans,
     currencies: Array.isArray(raw.currencies) && raw.currencies.length
       ? raw.currencies.filter((item) => item && item.code).map((item) => ({
           ...item,

@@ -2,7 +2,6 @@ package com.zhiji.local;
 
 import android.Manifest;
 import android.content.ComponentName;
-import android.content.Context;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
@@ -16,7 +15,6 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
-import org.json.JSONArray;
 
 @CapacitorPlugin(
     name = "AutoBooking",
@@ -33,6 +31,7 @@ public class AutoBookingPlugin extends Plugin {
         result.put("notificationAccess", enabled != null && enabled.contains(component.flattenToString()));
         result.put("accessibilityAccess", enabledAccessibility != null && enabledAccessibility.contains(accessibilityComponent.flattenToString()));
         result.put("smsPermission", getPermissionState("sms") == PermissionState.GRANTED);
+        result.put("pendingCount", BookingNotificationService.pendingCount(getContext()));
         call.resolve(result);
     }
 
@@ -62,17 +61,26 @@ public class AutoBookingPlugin extends Plugin {
 
     @PluginMethod
     public void drainNotifications(PluginCall call) {
-        String content = getContext().getSharedPreferences(BookingNotificationService.PREFERENCES, Context.MODE_PRIVATE)
-            .getString(BookingNotificationService.QUEUE_KEY, "[]");
-        getContext().getSharedPreferences(BookingNotificationService.PREFERENCES, Context.MODE_PRIVATE)
-            .edit().remove(BookingNotificationService.QUEUE_KEY).apply();
         try {
             JSObject result = new JSObject();
-            result.put("items", new JSArray(new JSONArray(content).toString()));
+            result.put("items", new JSArray(BookingNotificationService.getCandidates(getContext()).toString()));
             call.resolve(result);
         } catch (Exception exception) {
             call.reject("通知候选读取失败", exception);
         }
+    }
+
+    @PluginMethod
+    public void acknowledgeCandidate(PluginCall call) {
+        String id = call.getString("id", "");
+        String status = call.getString("status", "dismissed");
+        if (id.isEmpty()) {
+            call.reject("候选标识不能为空");
+            return;
+        }
+        JSObject result = new JSObject();
+        result.put("removed", BookingNotificationService.acknowledgeCandidate(getContext(), id, status));
+        call.resolve(result);
     }
 
     @PluginMethod

@@ -7,10 +7,23 @@ import {
   normalizeLedger,
 } from "./ledger-schema.mjs";
 import {
+  accountAvailableInBook,
   advanceRecurringDate,
   calculateAccountBalances,
+  calculateCreditAvailableLimit,
+  calculateCreditStatementSummary,
+  creditInterestFreeDays,
   installmentAmount,
+  refundedAmount,
+  remainingSettlementAmount,
   roundMoney,
+  savingsPlanPreset,
+  savingsPlanProgress,
+  transactionIncludedInOrdinaryStats,
+  validateRefund,
+  validateReimbursement,
+  validateSavingsPlan,
+  validateSettlement,
   validateTransaction
 } from "./ledger-domain.mjs";
 import { nativeWebDavAction } from "./native-webdav.mjs";
@@ -22,6 +35,7 @@ import {
 } from "./secure-store.mjs";
 import { captureVoiceInput } from "./voice-input.mjs";
 import {
+  acknowledgeAutoBookingCandidate,
   getAutoBookingStatus,
   loadNotificationCandidates,
   loadSmsCandidates,
@@ -99,9 +113,12 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
   let syncInProgress = false;
   let backgroundAt = null;
   let autoBookingCandidates = [];
+  let currentAutoBookingCandidateId = null;
+  const promptedAutoBookingCandidateIds = new Set();
   let transactionPhotos = [];
   let transactionLocation = null;
   let activeViewName = "home";
+  let editingRefundId = null;
 
   function makeId(prefix) {
     if (crypto.randomUUID) return `${prefix}-${crypto.randomUUID()}`;
@@ -146,8 +163,8 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
 
   function syncLedgerWidget() {
     const monthTransactions = currentTransactions().filter((item) => monthKey(item.date) === monthKey());
-    const income = monthTransactions.filter((item) => item.type === "income").reduce((sum, item) => sum + baseAmount(item), 0);
-    const expense = monthTransactions.filter((item) => item.type === "expense").reduce((sum, item) => sum + baseAmount(item), 0);
+    const income = monthTransactions.filter((item) => item.type === "income").reduce((sum, item) => sum + netBaseAmount(item), 0);
+    const expense = monthTransactions.filter((item) => item.type === "expense").reduce((sum, item) => sum + netBaseAmount(item), 0);
     const balance = Object.values(accountBalances()).reduce((sum, value) => sum + value, 0);
     updateLedgerWidget({
       bookName: activeBook().name,
@@ -195,8 +212,22 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     return `${prefix}¥${absolute}`;
   }
 
+  function formatPlanMoney(value, currencyCode) {
+    const currency = currencyByCode(currencyCode);
+    return `${currency.symbol || currency.code}${Number(value || 0).toLocaleString("zh-CN", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    })}`;
+  }
+
   function baseAmount(transaction) {
     return roundMoney(transaction.amount * (transaction.exchangeRate || 1));
+  }
+
+  function netBaseAmount(transaction) {
+    if (!transactionIncludedInOrdinaryStats(transaction)) return 0;
+    if (!["expense", "income"].includes(transaction.type)) return baseAmount(transaction);
+    return roundMoney(baseAmount(transaction) - refundedAmount(state, transaction.id) * (transaction.exchangeRate || 1));
   }
 
   function currencyByCode(code) {
@@ -242,6 +273,12 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     return state.transactions.filter((item) => item.bookId === state.activeBookId && !item.deletedAt);
   }
 
+  function availableAccounts(bookId = state.activeBookId, options = {}) {
+    return state.accounts.filter((item) => (
+      accountAvailableInBook(item, bookId) && (options.includeHidden || !item.hidden)
+    ));
+  }
+
   function currentMembers() {
     return state.members.filter((item) => (!item.bookId || item.bookId === state.activeBookId) && !item.deletedAt);
   }
@@ -269,6 +306,30 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
 
   function accountBalances() {
     return calculateAccountBalances(state);
+  }
+
+  function creditSummary(account, balances) {
+    if (account.type !== "credit") return null;
+    try {
+      const rate = currencyByCode(account.currencyCode).rate || 1;
+      const limit = calculateCreditAvailableLimit(state, account.id);
+      const statement = account.credit?.billingDay
+        ? calculateCreditStatementSummary(state, account.id, localDate())
+        : null;
+      const days = account.credit?.billingDay && (account.credit?.repaymentDay || account.credit?.repaymentType === "delay")
+        ? creditInterestFreeDays(localDate(), account.credit)
+        : null;
+      return {
+        debt: roundMoney(Math.max(0, -(balances[account.id] || 0) / rate)),
+        available: limit.available,
+        currentDue: statement?.currentDue || 0,
+        unbilledAmount: statement?.unbilledAmount || 0,
+        overpayment: statement?.overpayment || 0,
+        days,
+      };
+    } catch {
+      return null;
+    }
   }
 
   function sortedTransactions(transactions = state.transactions) {
@@ -317,7 +378,8 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     const categoryOptions = categories.map((item) => (
       `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`
     )).join("");
-    const accountOptions = state.accounts.map((item) => (
+    const accounts = availableAccounts();
+    const accountOptions = accounts.map((item) => (
       `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`
     )).join("");
 
@@ -334,7 +396,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     ].forEach((select) => {
       const current = select.value;
       select.innerHTML = accountOptions;
-      if (state.accounts.some((item) => item.id === current)) select.value = current;
+      if (accounts.some((item) => item.id === current)) select.value = current;
     });
 
     const books = state.books.filter((item) => !item.hidden);
@@ -375,6 +437,25 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       ? selectedAccountCurrency
       : state.baseCurrency;
 
+    const selectedSharedAccount = elements.newAccountSharedLimit.value;
+    const sharedAccounts = state.accounts.filter((item) => (
+      !item.deletedAt && item.type === "credit" && item.currencyCode === elements.newAccountCurrency.value
+    ));
+    elements.newAccountSharedLimit.innerHTML = '<option value="">独立额度</option>' + sharedAccounts.map((item) => (
+      `<option value="${escapeHtml(item.id)}">与 ${escapeHtml(item.name)} 共享</option>`
+    )).join("");
+    if (sharedAccounts.some((item) => item.id === selectedSharedAccount)) elements.newAccountSharedLimit.value = selectedSharedAccount;
+
+    const selectedAccountBooks = new Set(
+      [...elements.newAccountBooks.querySelectorAll("input:checked")].map((item) => item.value),
+    );
+    elements.newAccountBooks.innerHTML = books.map((book) => {
+      const checked = selectedAccountBooks.size
+        ? selectedAccountBooks.has(book.id)
+        : book.id === state.activeBookId;
+      return `<label class="choice-item"><input type="checkbox" value="${escapeHtml(book.id)}"${checked ? " checked" : ""} /><span>${escapeHtml(book.name)}</span></label>`;
+    }).join("");
+
     const selectedSearchType = elements.searchType.value;
     elements.searchType.innerHTML = '<option value="">全部类型</option>' + Object.entries(TRANSACTION_TYPE_LABELS).map(([value, label]) => (
       `<option value="${value}">${label}</option>`
@@ -395,6 +476,11 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       select.innerHTML = accountOptions;
       if (state.accounts.some((item) => item.id === current)) select.value = current;
     });
+    [elements.savingsPlanSource, elements.savingsPlanTarget].forEach((select) => {
+      const current = select.value;
+      select.innerHTML = accountOptions;
+      if (accounts.some((item) => item.id === current)) select.value = current;
+    });
   }
 
   function renderHome() {
@@ -402,15 +488,15 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     const monthTransactions = currentTransactions().filter((item) => monthKey(item.date) === currentMonth);
     const incomeTransactions = monthTransactions.filter((item) => item.type === "income");
     const expenseTransactions = monthTransactions.filter((item) => item.type === "expense");
-    const income = incomeTransactions.reduce((sum, item) => sum + baseAmount(item), 0);
-    const expense = expenseTransactions.reduce((sum, item) => sum + baseAmount(item), 0);
+    const income = incomeTransactions.reduce((sum, item) => sum + netBaseAmount(item), 0);
+    const expense = expenseTransactions.reduce((sum, item) => sum + netBaseAmount(item), 0);
     const balances = accountBalances();
     const totalBalance = Object.values(balances).reduce((sum, value) => sum + value, 0);
     const budget = activeBook().monthlyBudget;
     const budgetPercent = budget > 0 ? Math.round((expense / budget) * 100) : 0;
 
     elements.totalBalance.textContent = totalBalance < 0 ? formatMoney(totalBalance, true) : formatMoney(totalBalance);
-    elements.accountCount.textContent = `${state.accounts.length} 个账户`;
+    elements.accountCount.textContent = `${availableAccounts().length} 个账户`;
     elements.monthIncome.textContent = formatMoney(income);
     elements.incomeCount.textContent = `${incomeTransactions.length} 笔收入`;
     elements.monthExpense.textContent = formatMoney(expense);
@@ -433,7 +519,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     const daily = Array.from({ length: days }, () => 0);
     expenseTransactions.forEach((item) => {
       const day = Number(item.date.slice(8, 10));
-      if (day >= 1 && day <= days) daily[day - 1] += baseAmount(item);
+      if (day >= 1 && day <= days) daily[day - 1] += netBaseAmount(item);
     });
     const max = Math.max(...daily, 1);
     elements.dailyChart.innerHTML = daily.map((value, index) => {
@@ -469,6 +555,8 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
         ? formatMoney(convertedAmount)
         : formatMoney(amountValue, true);
       const statusText = item.status === "pending" ? " · 待处理" : "";
+      const refundAmount = refundedAmount(state, item.id);
+      const refundText = refundAmount > 0 ? ` · 已退款 ${formatMoney(refundAmount * (item.exchangeRate || 1))}` : "";
       const currency = currencyByCode(item.currencyCode);
       const originalText = item.currencyCode !== state.baseCurrency ? ` · ${escapeHtml(currency.symbol)}${item.amount}` : "";
       const memberNames = (item.memberShares || []).map((share) => state.members.find((member) => member.id === share.memberId)?.name).filter(Boolean);
@@ -477,10 +565,12 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       return `
         <article class="transaction-item" data-id="${escapeHtml(item.id)}">
           <span class="category-mark" style="background:${escapeHtml(category.color)}">${escapeHtml(category.name.slice(0, 1))}</span>
-          <div class="transaction-main"><strong>${escapeHtml(note)}</strong><small>${escapeHtml(category.name)} · ${typeText}${statusText}${originalText}${dimensionText ? ` · ${escapeHtml(dimensionText)}` : ""}</small></div>
+          <div class="transaction-main"><strong>${escapeHtml(note)}</strong><small>${escapeHtml(category.name)} · ${typeText}${statusText}${refundText}${originalText}${dimensionText ? ` · ${escapeHtml(dimensionText)}` : ""}</small></div>
           <div class="transaction-meta"><strong>${escapeHtml(accountText)}</strong><small>${formatShortDate(item.date)}</small></div>
           <span class="transaction-amount ${amountClass}">${amountText}</span>
           <div class="transaction-actions">
+            ${["expense", "income"].includes(item.type) && refundAmount < item.amount ? '<button class="row-action" type="button" data-action="refund" title="退款" aria-label="退款">退</button>' : ""}
+            ${["payable", "receivable"].includes(item.type) && remainingSettlementAmount(state, item.id) > 0 ? '<button class="row-action" type="button" data-action="settle" title="结算" aria-label="结算">结</button>' : ""}
             <button class="row-action edit" type="button" data-action="edit" title="编辑" aria-label="编辑">✎</button>
             <button class="row-action delete" type="button" data-action="delete" title="删除" aria-label="删除">×</button>
           </div>
@@ -492,9 +582,9 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     const selectedMonth = elements.statsMonth.value || monthKey();
     if (!elements.statsMonth.value) elements.statsMonth.value = selectedMonth;
     const transactions = currentTransactions().filter((item) => monthKey(item.date) === selectedMonth);
-    const income = transactions.filter((item) => item.type === "income").reduce((sum, item) => sum + baseAmount(item), 0);
+    const income = transactions.filter((item) => item.type === "income").reduce((sum, item) => sum + netBaseAmount(item), 0);
     const expenseTransactions = transactions.filter((item) => item.type === "expense");
-    const expense = expenseTransactions.reduce((sum, item) => sum + baseAmount(item), 0);
+    const expense = expenseTransactions.reduce((sum, item) => sum + netBaseAmount(item), 0);
 
     elements.statsIncome.textContent = formatMoney(income);
     elements.statsExpense.textContent = formatMoney(expense);
@@ -503,7 +593,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
 
     const categoryTotals = new Map();
     expenseTransactions.forEach((item) => {
-      categoryTotals.set(item.categoryId, (categoryTotals.get(item.categoryId) || 0) + baseAmount(item));
+      categoryTotals.set(item.categoryId, (categoryTotals.get(item.categoryId) || 0) + netBaseAmount(item));
     });
     const categoryRows = [...categoryTotals.entries()].sort((a, b) => b[1] - a[1]);
     elements.categoryStats.innerHTML = categoryRows.length
@@ -538,7 +628,8 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     const categories = currentCategories();
     elements.monthlyBudget.value = activeBook().monthlyBudget;
     elements.categoryTotal.textContent = `${categories.length} 个`;
-    elements.accountTotal.textContent = `${state.accounts.length} 个`;
+    const managedAccounts = state.accounts.filter((item) => !item.deletedAt);
+    elements.accountTotal.textContent = `${managedAccounts.length} 个`;
     elements.currencyTotal.textContent = `${state.currencies.length} 个`;
     elements.appLockStatus.textContent = state.settings.appLock ? "已开启" : "未开启";
     elements.lockTimeout.value = String(state.settings.appLock?.timeoutMinutes ?? 5);
@@ -547,9 +638,26 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     )).join("");
 
     const balances = accountBalances();
-    elements.accountList.innerHTML = state.accounts.map((item) => (
-      `<div class="account-manage-item"><span>${escapeHtml(item.name)} · ${escapeHtml(ACCOUNT_TYPE_LABELS[item.type] || "账户")}</span><strong>${formatMoney(balances[item.id] || 0, true)}</strong><button type="button" data-account-id="${escapeHtml(item.id)}" data-account-action="rename" title="重命名账户" aria-label="重命名账户">✎</button><button type="button" data-account-id="${escapeHtml(item.id)}" data-account-action="delete" title="删除账户" aria-label="删除账户">×</button></div>`
-    )).join("");
+    elements.accountList.innerHTML = managedAccounts.map((item) => {
+      const credit = creditSummary(item, balances);
+      const balanceText = credit
+        ? `欠款 ${formatMoney(credit.debt)} · 可用 ${formatMoney(credit.available)}`
+        : formatMoney(balances[item.id] || 0, true);
+      const creditText = credit?.days == null ? "" : ` · 今日预计免息 ${credit.days} 天`;
+      const statementText = credit ? ` · 本期应还 ${formatMoney(credit.currentDue)} · 待出账 ${formatMoney(credit.unbilledAmount)}` : "";
+      return `<div class="account-manage-item${item.hidden ? " is-muted" : ""}">
+        <span>${escapeHtml(item.name)} · ${escapeHtml(ACCOUNT_TYPE_LABELS[item.type] || "账户")}<small>${escapeHtml((item.bookIds || []).map((id) => state.books.find((book) => book.id === id)?.name).filter(Boolean).join("、") || "全部账本")}</small></span>
+        <strong>${balanceText}${statementText}${creditText}</strong>
+        <div class="account-manage-actions">
+          ${credit ? `<button type="button" data-account-id="${escapeHtml(item.id)}" data-account-action="statement" title="查看信用账单">账单</button>` : ""}
+          <button type="button" data-account-id="${escapeHtml(item.id)}" data-account-action="balance" title="调整余额">调余额</button>
+          <button type="button" data-account-id="${escapeHtml(item.id)}" data-account-action="reconcile" title="对账">对账</button>
+          <button type="button" data-account-id="${escapeHtml(item.id)}" data-account-action="toggle-hidden">${item.hidden ? "显示" : "隐藏"}</button>
+          <button type="button" data-account-id="${escapeHtml(item.id)}" data-account-action="rename" title="重命名账户" aria-label="重命名账户">重命名</button>
+          <button class="danger" type="button" data-account-id="${escapeHtml(item.id)}" data-account-action="delete" title="删除账户" aria-label="删除账户">删除</button>
+        </div>
+      </div>`;
+    }).join("");
     elements.currencyList.innerHTML = state.currencies.map((item) => (
       `<span class="tag-item">${escapeHtml(item.code)} · ${escapeHtml(item.symbol)} · ${escapeHtml(item.name)} · ${item.rate}<button type="button" data-currency-code="${escapeHtml(item.code)}" title="删除币种" aria-label="删除币种">×</button></span>`
     )).join("");
@@ -569,16 +677,27 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     elements.recycleList.innerHTML = state.recycleBin.length ? [...state.recycleBin].reverse().map((item) => {
       const label = item.entityType === "book"
         ? `账本：${item.payload?.book?.name || "未命名"}`
-        : `账目：${item.payload?.note || formatMoney(item.payload?.amount)}`;
+        : item.entityType === "account"
+          ? `账户：${item.payload?.name || "未命名"}`
+          : item.entityType === "savings-plan"
+            ? `存钱计划：${item.payload?.name || "未命名"}`
+          : item.entityType === "reimbursement"
+            ? `报销到账：${item.payload?.transactions?.[0]?.note || formatMoney(item.payload?.reimbursement?.actualAmount)}`
+            : `账目：${item.payload?.note || formatMoney(item.payload?.amount)}`;
       return `<article class="plan-item" data-trash-id="${escapeHtml(item.id)}"><div class="plan-copy"><strong>${escapeHtml(label)}</strong><small>${new Date(item.deletedAt).toLocaleString("zh-CN")}</small></div><div class="plan-actions"><button class="book-action" type="button" data-trash-action="restore">恢复</button><button class="book-action danger" type="button" data-trash-action="delete">彻底删除</button></div></article>`;
     }).join("") : '<div class="empty-state"><strong>回收站为空</strong></div>';
     renderAutoBookingCandidates();
   }
 
   function renderAutoBookingCandidates() {
-    elements.autoBookingList.innerHTML = autoBookingCandidates.length ? autoBookingCandidates.map((item) => (
-      `<article class="plan-item" data-candidate-id="${escapeHtml(item.id)}"><div class="plan-copy"><strong>${escapeHtml(item.text)}</strong><small>${escapeHtml(item.source || "系统")} · ${new Date(Number(item.createdAt) || Date.now()).toLocaleString("zh-CN")}</small></div><div class="plan-actions"><button class="book-action" type="button" data-candidate-action="parse">解析</button><button class="book-action danger" type="button" data-candidate-action="dismiss">忽略</button></div></article>`
-    )).join("") : '<div class="empty-state"><strong>暂无候选</strong></div>';
+    elements.autoBookingList.innerHTML = autoBookingCandidates.length ? autoBookingCandidates.map((item) => {
+      const structured = Number(item.amount) > 0;
+      const title = structured
+        ? `${item.type === "income" ? "收入" : "支出"} ${formatMoney(item.amount)}${item.merchant ? ` · ${escapeHtml(item.merchant)}` : ""}`
+        : escapeHtml(item.text);
+      const detail = `${escapeHtml(item.sourceApp || item.source || "系统")} · ${item.channel === "accessibility" ? "无障碍" : item.channel === "notification" ? "通知" : "候选"} · ${new Date(Number(item.createdAt) || Date.now()).toLocaleString("zh-CN")}${item.confidence ? ` · ${item.confidence}%` : ""}`;
+      return `<article class="plan-item" data-candidate-id="${escapeHtml(item.id)}"><div class="plan-copy"><strong>${title}</strong><small>${detail}</small></div><div class="plan-actions"><button class="book-action" type="button" data-candidate-action="parse">确认</button><button class="book-action danger" type="button" data-candidate-action="dismiss">忽略</button></div></article>`;
+    }).join("") : '<div class="empty-state"><strong>暂无候选</strong></div>';
   }
 
   async function refreshAutoBookingStatus() {
@@ -588,10 +707,69 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       if (status.notificationAccess) labels.push("通知");
       if (status.accessibilityAccess) labels.push("无障碍");
       if (status.smsPermission) labels.push("短信");
-      elements.autoBookingStatus.textContent = labels.length ? `${labels.join(" · ")}已授权` : "未授权";
+      const pending = Number(status.pendingCount || autoBookingCandidates.length || 0);
+      elements.autoBookingStatus.textContent = `${labels.length ? `${labels.join(" · ")}已授权` : "未授权"}${pending ? ` · ${pending} 待确认` : ""}`;
     } catch {
       elements.autoBookingStatus.textContent = "状态不可用";
     }
+  }
+
+  function mergeAutoBookingCandidates(items) {
+    const unresolved = (items || []).filter((item) => {
+      if (!item?.id) return false;
+      const alreadySaved = state.transactions.some((transaction) => transaction.autoBookingCandidateId === item.id);
+      if (alreadySaved) acknowledgeAutoBookingCandidate(item.id, "confirmed").catch(() => {});
+      return !alreadySaved;
+    });
+    autoBookingCandidates = [...autoBookingCandidates, ...unresolved]
+      .filter((item, index, list) => list.findIndex((candidate) => candidate.id === item.id) === index)
+      .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+    renderAutoBookingCandidates();
+  }
+
+  function openAutoBookingCandidate(candidate) {
+    if (!candidate) return;
+    const parsed = parseNaturalLanguage(candidate.text || "");
+    const type = ["income", "expense"].includes(candidate.type) ? candidate.type : parsed.type;
+    const accounts = availableAccounts();
+    const account = accounts.find((item) => item.name === candidate.sourceApp) || accounts[0];
+    if (!account) return showToast("当前账本没有可用账户", true);
+    currentAutoBookingCandidateId = candidate.id;
+    document.querySelector(`input[name="parsed-type"][value="${type}"]`).checked = true;
+    elements.parsedAmount.value = Number(candidate.amount) > 0 ? candidate.amount : parsed.amount || "";
+    elements.parsedCategory.value = parsed.categoryId;
+    elements.parsedAccount.value = account.id;
+    elements.parsedTargetAccount.value = accounts.find((item) => item.id !== account.id)?.id || account.id;
+    elements.parsedDate.value = localDate(new Date(Number(candidate.createdAt) || Date.now()));
+    elements.parsedNote.value = [candidate.sourceApp || candidate.source, candidate.merchant, "自动识别"].filter(Boolean).join(" · ");
+    elements.parseConfidence.textContent = `自动识别置信度 ${Number(candidate.confidence || parsed.confidence || 0)}%`;
+    updateTransferFields("parsed");
+    elements.parseDialog.showModal();
+  }
+
+  async function refreshAutoBookingCandidates({ showPrompt = false } = {}) {
+    const result = await loadNotificationCandidates();
+    mergeAutoBookingCandidates(result.items || []);
+    await refreshAutoBookingStatus();
+    if (!showPrompt || elements.parseDialog.open) return;
+    const next = autoBookingCandidates.find((item) => !promptedAutoBookingCandidateIds.has(item.id));
+    if (!next) return;
+    promptedAutoBookingCandidateIds.add(next.id);
+    openAutoBookingCandidate(next);
+  }
+
+  function finishAutoBookingCandidate(id, status) {
+    if (!id) return;
+    autoBookingCandidates = autoBookingCandidates.filter((item) => item.id !== id);
+    renderAutoBookingCandidates();
+    acknowledgeAutoBookingCandidate(id, status).then(refreshAutoBookingStatus).catch(() => {});
+    setTimeout(() => {
+      if (elements.parseDialog.open || elements.lockDialog.open) return;
+      const next = autoBookingCandidates.find((item) => !promptedAutoBookingCandidateIds.has(item.id));
+      if (!next) return;
+      promptedAutoBookingCandidateIds.add(next.id);
+      openAutoBookingCandidate(next);
+    }, 0);
   }
 
   function renderSearch() {
@@ -633,17 +811,34 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     const expenses = currentTransactions().filter((item) => item.type === "expense" && monthKey(item.date) === month);
     const budgets = state.budgets.filter((item) => item.bookId === state.activeBookId && item.kind === "category");
     const goals = state.budgets.filter((item) => item.bookId === state.activeBookId && item.kind === "goal");
+    const savingsPlans = state.savingsPlans.filter((item) => item.bookId === state.activeBookId && !item.deletedAt);
     const schedules = state.schedules.filter((item) => item.bookId === state.activeBookId && item.active !== false);
     const installments = state.installments.filter((item) => item.bookId === state.activeBookId && !item.deletedAt);
 
     elements.categoryBudgetList.innerHTML = budgets.length ? budgets.map((budget) => {
-      const spent = expenses.filter((item) => item.categoryId === budget.categoryId).reduce((sum, item) => sum + baseAmount(item), 0);
+      const spent = expenses.filter((item) => item.categoryId === budget.categoryId).reduce((sum, item) => sum + netBaseAmount(item), 0);
       const percent = budget.amount > 0 ? Math.round((spent / budget.amount) * 100) : 0;
       return `<article class="plan-item" data-budget-id="${escapeHtml(budget.id)}">
         <div class="plan-copy"><strong>${escapeHtml(categoryById(budget.categoryId).name)} · ${formatMoney(spent)} / ${formatMoney(budget.amount)}</strong><small>${percent}%</small><div class="plan-progress"><span style="width:${Math.min(100, percent)}%;background:${percent > 100 ? "var(--expense)" : "var(--income)"}"></span></div></div>
         <div class="plan-actions"><button class="book-action danger" type="button" data-plan-action="delete-budget">删除</button></div>
       </article>`;
     }).join("") : '<div class="empty-state"><strong>暂无分类预算</strong></div>';
+
+    const templateLabels = { daily365: "365天", weekly52: "52周", monthlyFixed: "每月定额", custom: "自定义" };
+    elements.savingsPlanList.innerHTML = savingsPlans.length ? savingsPlans.map((plan) => {
+      const progress = savingsPlanProgress(state, plan);
+      const source = accountById(plan.sourceAccountId);
+      const target = accountById(plan.targetAccountId);
+      const paused = plan.status === "paused";
+      const status = progress.complete ? "已完成" : paused ? "已暂停" : "进行中";
+      const nextText = progress.complete
+        ? `共 ${progress.completedPeriods} 期 · ${escapeHtml(source.name)} → ${escapeHtml(target.name)}`
+        : `第 ${progress.nextPeriod}/${plan.totalPeriods} 期 · ${progress.nextDate} · ${formatPlanMoney(progress.nextAmount, plan.currencyCode)} · ${escapeHtml(source.name)} → ${escapeHtml(target.name)}`;
+      return `<article class="plan-item savings-plan-item" data-savings-plan-id="${escapeHtml(plan.id)}">
+        <div class="plan-copy"><strong>${escapeHtml(plan.name)} · ${status}</strong><small>${templateLabels[plan.template] || "自定义"} · 已存 ${formatPlanMoney(progress.savedAmount, plan.currencyCode)} / ${formatPlanMoney(progress.targetAmount, plan.currencyCode)}</small><small>${nextText}</small><div class="plan-progress"><span style="width:${progress.percentage}%"></span></div></div>
+        <div class="plan-actions">${progress.complete ? "" : paused ? '<button class="book-action" type="button" data-plan-action="resume-savings">继续</button>' : '<button class="book-action" type="button" data-plan-action="deposit-savings">存一期</button><button class="book-action" type="button" data-plan-action="pause-savings">暂停</button>'}<button class="book-action danger" type="button" data-plan-action="delete-savings">删除</button></div>
+      </article>`;
+    }).join("") : '<div class="empty-state"><strong>暂无存钱计划</strong></div>';
 
     elements.goalList.innerHTML = goals.length ? goals.map((goal) => {
       const percent = goal.targetAmount > 0 ? Math.round((goal.currentAmount / goal.targetAmount) * 100) : 0;
@@ -667,8 +862,86 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     const reimbursementTotal = reimbursements.reduce((sum, item) => sum + baseAmount(item), 0);
     elements.reimbursementTotal.textContent = formatMoney(reimbursementTotal);
     elements.reimbursementList.innerHTML = reimbursements.length ? reimbursements.map((item) => (
-      `<article class="plan-item" data-reimbursement-id="${escapeHtml(item.id)}"><div class="plan-copy"><strong>${escapeHtml(item.note || categoryById(item.categoryId).name)} · ${formatMoney(baseAmount(item))}</strong><small>${item.date} · ${escapeHtml(accountById(item.accountId).name)}</small></div><div class="plan-actions"><button class="book-action" type="button" data-plan-action="settle-reimbursement">确认到账</button></div></article>`
+      `<label class="plan-item pending-settlement-item"><input type="checkbox" value="${escapeHtml(item.id)}" /><span class="plan-copy"><strong>${escapeHtml(item.note || categoryById(item.categoryId).name)} · ${formatMoney(baseAmount(item))}</strong><small>${item.date} · ${escapeHtml(accountById(item.accountId).name)}</small></span></label>`
     )).join("") : '<div class="empty-state"><strong>暂无待报销账目</strong></div>';
+
+    const pendingSettlements = currentTransactions().filter((item) => (
+      ["payable", "receivable"].includes(item.type) && remainingSettlementAmount(state, item.id) > 0
+    ));
+    elements.pendingSettlementList.innerHTML = pendingSettlements.length ? pendingSettlements.map((item) => {
+      const remaining = remainingSettlementAmount(state, item.id);
+      return `<label class="plan-item pending-settlement-item"><input type="checkbox" value="${escapeHtml(item.id)}" /><span class="plan-copy"><strong>${item.type === "receivable" ? "应收" : "应付"} · ${escapeHtml(item.note || categoryById(item.categoryId).name)}</strong><small>剩余 ${formatMoney(remaining * (item.exchangeRate || 1))} · ${item.date}</small></span></label>`;
+    }).join("") : '<div class="empty-state"><strong>暂无待结算款项</strong></div>';
+  }
+
+  function savingsPlanFormValues() {
+    return {
+      template: elements.savingsPlanTemplate.value,
+      name: elements.savingsPlanName.value.trim(),
+      bookId: state.activeBookId,
+      sourceAccountId: elements.savingsPlanSource.value,
+      targetAccountId: elements.savingsPlanTarget.value,
+      startDate: elements.savingsPlanStartDate.value,
+      frequency: elements.savingsPlanFrequency.value,
+      totalPeriods: Number(elements.savingsPlanPeriods.value),
+      startAmount: Number(elements.savingsPlanStartAmount.value),
+      incrementAmount: Number(elements.savingsPlanIncrement.value),
+    };
+  }
+
+  function updateSavingsPlanPreview() {
+    try {
+      const values = validateSavingsPlan(savingsPlanFormValues(), state);
+      elements.savingsPlanPreview.textContent = `${values.totalPeriods} 期 · 计划总额 ${formatPlanMoney(values.targetAmount, values.currencyCode)}`;
+    } catch (error) {
+      elements.savingsPlanPreview.textContent = error.message;
+    }
+  }
+
+  function applySavingsPlanPreset() {
+    const template = elements.savingsPlanTemplate.value;
+    const preset = savingsPlanPreset(template);
+    elements.savingsPlanName.value = preset.name;
+    elements.savingsPlanFrequency.value = preset.frequency;
+    elements.savingsPlanPeriods.value = preset.totalPeriods;
+    elements.savingsPlanStartAmount.value = preset.startAmount;
+    elements.savingsPlanIncrement.value = preset.incrementAmount;
+    const fixed = ["daily365", "weekly52"].includes(template);
+    [elements.savingsPlanFrequency, elements.savingsPlanPeriods, elements.savingsPlanStartAmount, elements.savingsPlanIncrement]
+      .forEach((input) => { input.disabled = fixed; });
+    updateSavingsPlanPreview();
+  }
+
+  function openSavingsPlanDialog() {
+    const accounts = availableAccounts();
+    if (accounts.length < 2) return showToast("至少需要两个可用账户才能创建存钱计划", true);
+    elements.savingsPlanForm.reset();
+    renderSelects();
+    elements.savingsPlanTemplate.value = "daily365";
+    elements.savingsPlanStartDate.value = localDate();
+    elements.savingsPlanSource.value = accounts[0].id;
+    const target = accounts.find((item) => item.id !== accounts[0].id && item.currencyCode === accounts[0].currencyCode);
+    elements.savingsPlanTarget.value = target?.id || accounts[1].id;
+    applySavingsPlanPreset();
+    elements.savingsPlanDialog.showModal();
+  }
+
+  function openSavingsDepositDialog(planId) {
+    const plan = state.savingsPlans.find((item) => item.id === planId && !item.deletedAt);
+    if (!plan) return showToast("存钱计划不存在", true);
+    if (plan.status === "paused") return showToast("请先继续该计划", true);
+    const progress = savingsPlanProgress(state, plan);
+    if (progress.complete) return showToast("该计划已经完成");
+    const source = state.accounts.find((item) => item.id === plan.sourceAccountId);
+    const target = state.accounts.find((item) => item.id === plan.targetAccountId);
+    if (!accountAvailableInBook(source, plan.bookId) || !accountAvailableInBook(target, plan.bookId)) {
+      return showToast("计划关联账户当前不可用", true);
+    }
+    elements.savingsDepositPlanId.value = plan.id;
+    elements.savingsDepositTitle.textContent = `${plan.name} · 第 ${progress.nextPeriod} 期`;
+    elements.savingsDepositSummary.textContent = `${formatPlanMoney(progress.nextAmount, plan.currencyCode)} · ${source.name} → ${target.name}`;
+    elements.savingsDepositDate.value = progress.nextDate;
+    elements.savingsDepositDialog.showModal();
   }
 
   function renderTemplates() {
@@ -799,6 +1072,10 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
   function editTransaction(id) {
     const item = state.transactions.find((transaction) => transaction.id === id);
     if (!item) return;
+    if (item.savingsPlanId) {
+      showToast("计划存款不能直接编辑，请删除后重新执行该期", true);
+      return;
+    }
     switchView("record");
     elements.transactionId.value = item.id;
     document.querySelector(`input[name="type"][value="${item.type}"]`).checked = true;
@@ -832,6 +1109,41 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
   function deleteTransaction(id) {
     const item = state.transactions.find((transaction) => transaction.id === id);
     if (!item) return;
+    const reimbursement = item.reimbursementId
+      ? state.reimbursements.find((candidate) => candidate.id === item.reimbursementId && !candidate.deletedAt)
+      : null;
+    if (reimbursement?.sourceTransactionIds.includes(item.id)) {
+      showToast("请先删除关联的报销到账记录，再删除待报销明细", true);
+      return;
+    }
+    if (reimbursement) {
+      if (!window.confirm("删除报销到账会同时撤销差额明细，并将来源恢复为待报销。确定继续吗？")) return;
+      const generatedIds = [reimbursement.transactionId, reimbursement.differenceTransactionId].filter(Boolean);
+      const generatedTransactions = state.transactions.filter((transaction) => generatedIds.includes(transaction.id));
+      const deletedAt = new Date().toISOString();
+      state.recycleBin.push({
+        id: makeId("trash"),
+        entityType: "reimbursement",
+        deletedAt,
+        payload: {
+          reimbursement: structuredClone(reimbursement),
+          transactions: structuredClone(generatedTransactions),
+        },
+      });
+      reimbursement.deletedAt = deletedAt;
+      reimbursement.sourceTransactionIds.forEach((sourceId) => {
+        const source = state.transactions.find((candidate) => candidate.id === sourceId);
+        if (!source) return;
+        source.reimburseStatus = "pending";
+        source.reimbursementId = null;
+        source.relationGroupId = null;
+        source.linkedTransactionId = null;
+        source.updatedAt = deletedAt;
+      });
+      state.transactions = state.transactions.filter((transaction) => !generatedIds.includes(transaction.id));
+      saveState("报销到账已撤销，来源已恢复为待报销");
+      return;
+    }
     if (!window.confirm(`确定删除“${item.note || categoryById(item.categoryId).name}”这笔记录吗？`)) return;
     state.recycleBin.push({
       id: makeId("trash"),
@@ -839,8 +1151,137 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       deletedAt: new Date().toISOString(),
       payload: structuredClone(item)
     });
+    const settlement = item.settlementId
+      ? state.settlements.find((candidate) => candidate.id === item.settlementId && !candidate.deletedAt)
+      : null;
+    if (settlement) {
+      settlement.deletedAt = new Date().toISOString();
+      settlement.sourceTransactionIds.forEach((sourceId) => {
+        const source = state.transactions.find((candidate) => candidate.id === sourceId);
+        if (source) source.status = "pending";
+      });
+    }
     state.transactions = state.transactions.filter((transaction) => transaction.id !== id);
     saveState("账目已移入回收站");
+  }
+
+  function renderRefundRecords(transactionId) {
+    const refunds = (state.refunds || []).filter((item) => item.transactionId === transactionId && !item.deletedAt);
+    elements.refundRecordList.innerHTML = refunds.length ? refunds.map((item) => (
+      `<article class="plan-item" data-refund-id="${escapeHtml(item.id)}"><div class="plan-copy"><strong>${formatMoney(item.accountAmount * (item.exchangeRate || 1))}</strong><small>${item.date} · ${escapeHtml(accountById(item.accountId).name)}${item.note ? ` · ${escapeHtml(item.note)}` : ""}</small></div><div class="plan-actions"><button class="book-action" type="button" data-refund-action="edit">编辑</button><button class="book-action danger" type="button" data-refund-action="delete">删除</button></div></article>`
+    )).join("") : '<div class="empty-state"><strong>暂无退款记录</strong></div>';
+  }
+
+  function updateRefundAccountAmount() {
+    const transaction = state.transactions.find((item) => item.id === elements.refundTransactionId.value);
+    const account = state.accounts.find((item) => item.id === elements.refundAccount.value);
+    const amount = Number(elements.refundAmount.value);
+    if (!transaction || !account || !(amount > 0)) return;
+    const accountRate = currencyByCode(account.currencyCode).rate || 1;
+    elements.refundAccountAmount.value = String(roundMoney(amount * (transaction.exchangeRate || 1) / accountRate));
+  }
+
+  function openRefundDialog(transactionId) {
+    const transaction = state.transactions.find((item) => item.id === transactionId && !item.deletedAt);
+    if (!transaction || !["expense", "income"].includes(transaction.type)) return;
+    const remaining = roundMoney(transaction.amount - refundedAmount(state, transaction.id));
+    const accounts = availableAccounts(transaction.bookId);
+    if (!accounts.length) return showToast("当前账本没有可用退款账户", true);
+    editingRefundId = null;
+    elements.refundTransactionId.value = transaction.id;
+    elements.refundDialogTitle.textContent = transaction.type === "expense" ? "记录支出退款" : "记录收入退回";
+    elements.refundRemaining.textContent = `原金额 ${formatMoney(baseAmount(transaction))} · 还可退款 ${formatMoney(remaining * (transaction.exchangeRate || 1))}`;
+    elements.refundAmount.max = String(remaining);
+    elements.refundAmount.value = String(remaining);
+    elements.refundAccount.innerHTML = accounts.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
+    elements.refundAccount.value = accounts.some((item) => item.id === transaction.accountId) ? transaction.accountId : accounts[0].id;
+    updateRefundAccountAmount();
+    elements.refundDate.value = localDate();
+    elements.refundNote.value = "";
+    renderRefundRecords(transaction.id);
+    elements.refundDialog.showModal();
+  }
+
+  function openSettlementDialog(transactionIds) {
+    const ids = Array.isArray(transactionIds) ? transactionIds : [transactionIds];
+    const transactions = ids.map((id) => state.transactions.find((item) => item.id === id && !item.deletedAt)).filter(Boolean);
+    if (!transactions.length) return;
+    const first = transactions[0];
+    if (transactions.some((item) => item.bookId !== first.bookId)) return showToast("不同账本不能合并结算", true);
+    if (transactions.some((item) => item.type !== first.type)) return showToast("应收和应付不能合并结算", true);
+    if (transactions.some((item) => item.currencyCode !== first.currencyCode || Number(item.exchangeRate || 1) !== Number(first.exchangeRate || 1))) {
+      return showToast("不同币种或汇率的明细不能合并结算", true);
+    }
+    const remaining = roundMoney(transactions.reduce((sum, item) => sum + remainingSettlementAmount(state, item.id), 0));
+    if (remaining <= 0) return;
+    const accounts = availableAccounts(first.bookId);
+    if (!accounts.length) return showToast("当前账本没有可用结算账户", true);
+    elements.settlementTransactionId.value = JSON.stringify(transactions.map((item) => item.id));
+    elements.settlementDialogTitle.textContent = first.type === "receivable" ? "确认收款" : "确认付款";
+    elements.settlementRemaining.textContent = `${transactions.length} 笔 · 待结算 ${formatMoney(remaining * (first.exchangeRate || 1))}`;
+    elements.settlementAmount.max = String(remaining);
+    elements.settlementAmount.value = String(remaining);
+    elements.settlementAccount.innerHTML = accounts.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
+    elements.settlementAccount.value = accounts.some((item) => item.id === first.accountId) ? first.accountId : accounts[0].id;
+    elements.settlementDate.value = localDate();
+    elements.settlementNote.value = "";
+    elements.settlementDialog.showModal();
+  }
+
+  function openReimbursementDialog(transactionIds) {
+    const ids = Array.isArray(transactionIds) ? transactionIds : [transactionIds];
+    const sources = ids.map((id) => state.transactions.find((item) => item.id === id && !item.deletedAt)).filter(Boolean);
+    if (!sources.length) return;
+    const first = sources[0];
+    if (sources.some((item) => item.type !== "expense" || item.reimburseStatus !== "pending")) {
+      return showToast("所选明细包含不可报销项目", true);
+    }
+    if (sources.some((item) => item.bookId !== first.bookId)) return showToast("不同账本不能合并报销", true);
+    if (sources.some((item) => item.currencyCode !== first.currencyCode || Number(item.exchangeRate || 1) !== Number(first.exchangeRate || 1))) {
+      return showToast("不同币种或汇率的明细不能合并报销", true);
+    }
+    const accounts = availableAccounts(first.bookId);
+    if (!accounts.length) return showToast("当前账本没有可用到账账户", true);
+    const expected = roundMoney(sources.reduce((total, item) => total + item.amount, 0));
+    elements.reimbursementTransactionIds.value = JSON.stringify(ids);
+    elements.reimbursementSummary.textContent = `${sources.length} 笔 · 待报销 ${formatMoney(expected * (first.exchangeRate || 1))}`;
+    elements.reimbursementActualAmount.value = String(expected);
+    elements.reimbursementAccount.innerHTML = accounts.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
+    elements.reimbursementAccount.value = accounts.some((item) => item.id === first.accountId) ? first.accountId : accounts[0].id;
+    elements.reimbursementDate.value = localDate();
+    elements.reimbursementNote.value = "";
+    elements.reimbursementDialog.showModal();
+  }
+
+  function openCreditStatementDialog(accountId) {
+    const account = state.accounts.find((item) => item.id === accountId && item.type === "credit" && !item.deletedAt);
+    if (!account) return;
+    try {
+      const summary = calculateCreditStatementSummary(state, account.id, localDate());
+      elements.creditStatementTitle.textContent = `${account.name}账单`;
+      elements.creditStatementSummary.innerHTML = `
+        <span><small>总欠款</small><strong>${formatMoney(summary.totalDebt)}</strong></span>
+        <span><small>本期剩余应还</small><strong>${formatMoney(summary.currentDue)}</strong></span>
+        <span><small>待出账</small><strong>${formatMoney(summary.unbilledAmount)}</strong></span>
+        <span><small>溢缴款</small><strong>${formatMoney(summary.overpayment)}</strong></span>
+        ${summary.untrackedDebt > 0 ? `<p>初始欠款 ${formatMoney(summary.untrackedDebt)} 未归入账单周期；按目标规则建议用对应周期的汇总支出补录。</p>` : ""}
+      `;
+      const visibleStatements = [...summary.statements]
+        .filter((item) => item.grossAmount > 0 || item.incomeCredit > 0 || item.sameCycleRefund > 0)
+        .reverse();
+      elements.creditStatementList.innerHTML = visibleStatements.length ? visibleStatements.map((item) => {
+        const issued = item.statementDate <= summary.asOfDate;
+        const detail = issued
+          ? `应还 ${formatMoney(item.issuedDue)} · 已还 ${formatMoney(item.repaymentApplied)} · 剩余 ${formatMoney(item.remainingDue)}`
+          : `待出账 ${formatMoney(item.statementAmount)} · 收入抵扣 ${formatMoney(item.incomeCredit)}`;
+        const refundText = item.sameCycleRefund > 0 ? ` · 同期退款 ${formatMoney(item.sameCycleRefund)}` : "";
+        const overpaymentText = item.overpaymentApplied > 0 ? ` · 溢缴抵扣 ${formatMoney(item.overpaymentApplied)}` : "";
+        return `<article class="plan-item"><div class="plan-copy"><strong>${item.statementDate} · 出账 ${formatMoney(item.statementAmount)}</strong><small>还款日 ${item.repaymentDate} · ${detail}${refundText}${overpaymentText}</small></div><span class="local-chip">${issued ? (item.remainingDue > 0 ? "待还" : "已结清") : "未出账"}</span></article>`;
+      }).join("") : '<div class="empty-state"><strong>暂无信用账单</strong></div>';
+      elements.creditStatementDialog.showModal();
+    } catch (error) {
+      showToast(error.message, true);
+    }
   }
 
   function updateTransferFields(scope) {
@@ -934,6 +1375,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       showToast("请先描述一笔收支", true);
       return;
     }
+    currentAutoBookingCandidateId = null;
     const result = parseNaturalLanguage(text);
     document.querySelector(`input[name="parsed-type"][value="${result.type}"]`).checked = true;
     elements.parsedAmount.value = result.amount || "";
@@ -965,6 +1407,13 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
   }
 
   function saveParsedTransaction() {
+    const candidateId = currentAutoBookingCandidateId;
+    if (candidateId && state.transactions.some((item) => item.autoBookingCandidateId === candidateId)) {
+      finishAutoBookingCandidate(candidateId, "confirmed");
+      currentAutoBookingCandidateId = null;
+      elements.parseDialog.close();
+      throw new Error("该自动识别账单已经入账");
+    }
     const type = document.querySelector('input[name="parsed-type"]:checked').value;
     const amount = Number(elements.parsedAmount.value);
     if (!Number.isFinite(amount) || amount <= 0) throw new Error("请确认有效金额");
@@ -996,6 +1445,8 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       photos: [],
       location: null,
       linkedTransactionId: null,
+      autoBookingCandidateId: candidateId || null,
+      generatedBy: candidateId ? { kind: "auto-booking", candidateId } : null,
       reconciled: false,
       deletedAt: null,
       createdAt: now,
@@ -1004,6 +1455,8 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     elements.quickRecordInput.value = "";
     elements.recordPageQuickInput.value = "";
     elements.parseDialog.close();
+    if (candidateId) finishAutoBookingCandidate(candidateId, "confirmed");
+    currentAutoBookingCandidateId = null;
     saveState("已保存到本地账本");
   }
 
@@ -1445,6 +1898,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     elements.parseConfirmForm.addEventListener("submit", (event) => {
       event.preventDefault();
       if (event.submitter?.value === "cancel") {
+        currentAutoBookingCandidateId = null;
         elements.parseDialog.close();
         return;
       }
@@ -1584,7 +2038,299 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
         if (!button || !item) return;
         if (button.dataset.action === "edit") editTransaction(item.dataset.id);
         if (button.dataset.action === "delete") deleteTransaction(item.dataset.id);
+        if (button.dataset.action === "refund") openRefundDialog(item.dataset.id);
+        if (button.dataset.action === "settle") openSettlementDialog(item.dataset.id);
       });
+    });
+
+    document.querySelectorAll("[data-dialog-close]").forEach((button) => {
+      button.addEventListener("click", () => elements[button.dataset.dialogClose]?.close());
+    });
+
+    elements.openSavingsPlan.addEventListener("click", openSavingsPlanDialog);
+    elements.savingsPlanTemplate.addEventListener("change", applySavingsPlanPreset);
+    [
+      elements.savingsPlanName,
+      elements.savingsPlanSource,
+      elements.savingsPlanTarget,
+      elements.savingsPlanStartDate,
+      elements.savingsPlanFrequency,
+      elements.savingsPlanPeriods,
+      elements.savingsPlanStartAmount,
+      elements.savingsPlanIncrement,
+    ].forEach((input) => input.addEventListener(input.tagName === "SELECT" ? "change" : "input", updateSavingsPlanPreview));
+    elements.savingsPlanForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      try {
+        const values = validateSavingsPlan(savingsPlanFormValues(), state);
+        state.savingsPlans.push({
+          id: makeId("saving"),
+          ...values,
+          deletedAt: null,
+          createdAt: new Date().toISOString(),
+        });
+        elements.savingsPlanDialog.close();
+        saveState("存钱计划已创建");
+      } catch (error) {
+        showToast(error.message, true);
+      }
+    });
+    elements.savingsDepositForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      try {
+        const plan = state.savingsPlans.find((item) => item.id === elements.savingsDepositPlanId.value && !item.deletedAt);
+        if (!plan || plan.status === "paused") throw new Error("存钱计划当前不可执行");
+        const progress = savingsPlanProgress(state, plan);
+        if (progress.complete) throw new Error("存钱计划已经完成");
+        const category = currentCategories().find((item) => item.kind === "transfer") || currentCategories()[0];
+        const now = new Date().toISOString();
+        const transaction = validateTransaction({
+          id: makeId("tx"),
+          bookId: plan.bookId,
+          type: "transfer",
+          amount: progress.nextAmount,
+          categoryId: category.id,
+          accountId: plan.sourceAccountId,
+          targetAccountId: plan.targetAccountId,
+          date: elements.savingsDepositDate.value,
+          time: new Date().toTimeString().slice(0, 5),
+          note: `${plan.name} · 第${progress.nextPeriod}期`,
+          status: "posted",
+          reimburseStatus: "none",
+          currencyCode: plan.currencyCode,
+          exchangeRate: currencyByCode(plan.currencyCode).rate || 1,
+          originalAmount: progress.nextAmount,
+          tagIds: [],
+          merchantId: null,
+          memberShares: [],
+          budgetIncluded: false,
+          photos: [],
+          location: null,
+          linkedTransactionId: null,
+          savingsPlanId: plan.id,
+          savingsPlanPeriod: progress.nextPeriod,
+          generatedBy: { kind: "savings-plan", savingsPlanId: plan.id, period: progress.nextPeriod },
+          reconciled: false,
+          deletedAt: null,
+          createdAt: now,
+          updatedAt: now,
+        }, state);
+        state.transactions.push(transaction);
+        elements.savingsDepositDialog.close();
+        saveState(`第 ${progress.nextPeriod} 期已转入存款账户`);
+      } catch (error) {
+        showToast(error.message, true);
+      }
+    });
+
+    elements.refundForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      try {
+        const transaction = state.transactions.find((item) => item.id === elements.refundTransactionId.value);
+        const values = validateRefund({
+          refundId: editingRefundId,
+          transactionId: transaction?.id,
+          accountId: elements.refundAccount.value,
+          amount: Number(elements.refundAmount.value),
+          accountAmount: Number(elements.refundAccountAmount.value),
+          date: elements.refundDate.value,
+          time: new Date().toTimeString().slice(0, 5),
+          note: elements.refundNote.value.trim()
+        }, state);
+        const now = new Date().toISOString();
+        const editingRefund = editingRefundId
+          ? state.refunds.find((item) => item.id === editingRefundId && !item.deletedAt)
+          : null;
+        if (editingRefund) Object.assign(editingRefund, values, { updatedAt: now });
+        else state.refunds.push({
+          id: makeId("refund"),
+          ...values,
+          deletedAt: null,
+          createdAt: now,
+          updatedAt: now
+        });
+        const message = editingRefund ? "退款记录已更新" : "退款记录已保存，余额与统计已按净额更新";
+        editingRefundId = null;
+        elements.refundDialog.close();
+        saveState(message);
+      } catch (error) {
+        showToast(error.message, true);
+      }
+    });
+
+    elements.refundRecordList.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-refund-action]");
+      const row = event.target.closest("[data-refund-id]");
+      if (!button || !row) return;
+      const refund = state.refunds.find((item) => item.id === row.dataset.refundId && !item.deletedAt);
+      if (button.dataset.refundAction === "edit") {
+        const transaction = state.transactions.find((item) => item.id === refund?.transactionId && !item.deletedAt);
+        if (!refund || !transaction) return;
+        editingRefundId = refund.id;
+        elements.refundDialogTitle.textContent = transaction.type === "expense" ? "编辑支出退款" : "编辑收入退回";
+        elements.refundAmount.max = String(roundMoney(transaction.amount - refundedAmount(state, transaction.id) + refund.amount));
+        elements.refundAmount.value = String(refund.amount);
+        elements.refundAccount.value = [...elements.refundAccount.options].some((option) => option.value === refund.accountId)
+          ? refund.accountId
+          : elements.refundAccount.options[0]?.value || "";
+        if (elements.refundAccount.value === refund.accountId) elements.refundAccountAmount.value = String(refund.accountAmount);
+        else updateRefundAccountAmount();
+        elements.refundDate.value = refund.date;
+        elements.refundNote.value = refund.note || "";
+        return;
+      }
+      if (button.dataset.refundAction !== "delete") return;
+      if (!refund || !window.confirm("确定删除该退款记录吗？余额和统计会恢复。")) return;
+      refund.deletedAt = new Date().toISOString();
+      editingRefundId = null;
+      elements.refundDialog.close();
+      saveState("退款记录已删除");
+    });
+
+    elements.refundAmount.addEventListener("input", updateRefundAccountAmount);
+    elements.refundAccount.addEventListener("change", updateRefundAccountAmount);
+
+    elements.reimbursementForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      try {
+        const sourceIds = JSON.parse(elements.reimbursementTransactionIds.value);
+        const sources = sourceIds.map((id) => state.transactions.find((item) => item.id === id)).filter(Boolean);
+        const values = validateReimbursement({
+          sourceTransactionIds: sourceIds,
+          accountId: elements.reimbursementAccount.value,
+          actualAmount: Number(elements.reimbursementActualAmount.value),
+          date: elements.reimbursementDate.value,
+          note: elements.reimbursementNote.value.trim(),
+        }, state);
+        const reimbursementId = makeId("reimbursement");
+        const now = new Date().toISOString();
+        const incomeCategory = currentCategories().find((item) => item.kind === "income") || currentCategories()[0];
+        const expenseCategory = currentCategories().find((item) => item.kind === "expense") || currentCategories()[0];
+        const receipt = {
+          ...plannedTransaction({
+            type: "income",
+            amount: values.receiptAmount,
+            categoryId: incomeCategory.id,
+            accountId: values.accountId,
+            date: values.date,
+            note: values.note || `报销到账：${sources.length}笔`,
+            currencyCode: values.currencyCode,
+            exchangeRate: values.exchangeRate,
+          }),
+          reimbursementId,
+          relationGroupId: reimbursementId,
+          generatedBy: { kind: "reimbursement", reimbursementId },
+          reimburseStatus: "receipt",
+          budgetIncluded: false,
+          createdAt: now,
+          updatedAt: now,
+        };
+        let differenceTransaction = null;
+        if (values.differenceAmount > 0) {
+          differenceTransaction = {
+            ...plannedTransaction({
+              type: values.differenceType,
+              amount: values.differenceAmount,
+              categoryId: values.differenceType === "income" ? incomeCategory.id : expenseCategory.id,
+              accountId: values.accountId,
+              date: values.date,
+              note: `报销差额：${values.note || `${sources.length}笔`}`,
+              currencyCode: values.currencyCode,
+              exchangeRate: values.exchangeRate,
+            }),
+            reimbursementId,
+            relationGroupId: reimbursementId,
+            generatedBy: { kind: "reimbursement-difference", reimbursementId },
+            createdAt: now,
+            updatedAt: now,
+          };
+        }
+        state.reimbursements.push({
+          id: reimbursementId,
+          ...values,
+          transactionId: receipt.id,
+          differenceTransactionId: differenceTransaction?.id || null,
+          deletedAt: null,
+          createdAt: now,
+        });
+        state.transactions.push(receipt, ...(differenceTransaction ? [differenceTransaction] : []));
+        sources.forEach((source) => {
+          source.reimburseStatus = "reimbursed";
+          source.reimbursementId = reimbursementId;
+          source.relationGroupId = reimbursementId;
+          source.linkedTransactionId = receipt.id;
+          source.updatedAt = now;
+        });
+        elements.reimbursementDialog.close();
+        const differenceText = values.differenceAmount > 0
+          ? `，差额 ${formatMoney(values.differenceAmount * values.exchangeRate)} 已记为${values.differenceType === "income" ? "收入" : "支出"}`
+          : "";
+        saveState(`报销到账已关联${differenceText}`);
+      } catch (error) {
+        showToast(error.message, true);
+      }
+    });
+
+    elements.batchReimbursement.addEventListener("click", () => {
+      const ids = [...elements.reimbursementList.querySelectorAll("input:checked")].map((item) => item.value);
+      if (!ids.length) return showToast("请先选择待报销明细", true);
+      openReimbursementDialog(ids);
+    });
+
+    elements.settlementForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      try {
+        const sourceIds = JSON.parse(elements.settlementTransactionId.value);
+        const sources = sourceIds.map((id) => state.transactions.find((item) => item.id === id)).filter(Boolean);
+        const source = sources[0];
+        const values = validateSettlement({
+          sourceTransactionIds: sourceIds,
+          accountId: elements.settlementAccount.value,
+          amount: Number(elements.settlementAmount.value),
+          date: elements.settlementDate.value,
+          note: elements.settlementNote.value.trim()
+        }, state);
+        const category = currentCategories().find((item) => item.kind === values.transactionType) || currentCategories()[0];
+        const transaction = plannedTransaction({
+          type: values.transactionType,
+          amount: values.amount,
+          categoryId: category.id,
+          accountId: values.accountId,
+          date: values.date,
+          note: values.note || `${source.type === "receivable" ? "应收到账" : "应付付款"}：${sources.length > 1 ? `${sources.length}笔合并` : source.note || categoryById(source.categoryId).name}`,
+          linkedTransactionId: sources.length === 1 ? source.id : null,
+          currencyCode: values.currencyCode,
+          exchangeRate: values.exchangeRate
+        });
+        const settlement = {
+          id: makeId("settlement"),
+          sourceTransactionIds: values.sourceTransactionIds,
+          transactionId: transaction.id,
+          amount: values.amount,
+          allocations: values.allocations,
+          date: values.date,
+          deletedAt: null,
+          createdAt: new Date().toISOString()
+        };
+        transaction.settlementId = settlement.id;
+        transaction.relationGroupId = settlement.id;
+        state.settlements.push(settlement);
+        state.transactions.push(transaction);
+        sources.forEach((item) => {
+          if (roundMoney(remainingSettlementAmount(state, item.id)) === 0) item.status = "posted";
+          item.updatedAt = new Date().toISOString();
+        });
+        elements.settlementDialog.close();
+        saveState(sources.every((item) => item.status === "posted") ? "结算完成，已生成正式收支明细" : "部分结算已保存");
+      } catch (error) {
+        showToast(error.message, true);
+      }
+    });
+
+    elements.batchSettlement.addEventListener("click", () => {
+      const ids = [...elements.pendingSettlementList.querySelectorAll("input:checked")].map((item) => item.value);
+      if (!ids.length) return showToast("请先选择要结算的应收或应付明细", true);
+      openSettlementDialog(ids);
     });
 
     elements.statsMonth.addEventListener("change", renderStats);
@@ -1690,11 +2436,34 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       const action = button.dataset.planAction;
       const budgetId = event.target.closest("[data-budget-id]")?.dataset.budgetId;
       const goalId = event.target.closest("[data-goal-id]")?.dataset.goalId;
+      const savingsPlanId = event.target.closest("[data-savings-plan-id]")?.dataset.savingsPlanId;
       const scheduleId = event.target.closest("[data-schedule-id]")?.dataset.scheduleId;
       const installmentId = event.target.closest("[data-installment-id]")?.dataset.installmentId;
-      const reimbursementId = event.target.closest("[data-reimbursement-id]")?.dataset.reimbursementId;
 
-      if (action === "delete-budget") {
+      if (action === "deposit-savings") {
+        openSavingsDepositDialog(savingsPlanId);
+      } else if (action === "pause-savings") {
+        const plan = state.savingsPlans.find((item) => item.id === savingsPlanId && !item.deletedAt);
+        if (!plan) return;
+        plan.status = "paused";
+        saveState("存钱计划已暂停");
+      } else if (action === "resume-savings") {
+        const plan = state.savingsPlans.find((item) => item.id === savingsPlanId && !item.deletedAt);
+        if (!plan) return;
+        plan.status = "active";
+        saveState("存钱计划已继续");
+      } else if (action === "delete-savings") {
+        const plan = state.savingsPlans.find((item) => item.id === savingsPlanId && !item.deletedAt);
+        if (!plan || !window.confirm("删除计划不会删除已经产生的转账记录。确定继续吗？")) return;
+        plan.deletedAt = new Date().toISOString();
+        state.recycleBin.push({
+          id: makeId("trash"),
+          entityType: "savings-plan",
+          deletedAt: plan.deletedAt,
+          payload: structuredClone(plan),
+        });
+        saveState("存钱计划已移入回收站，历史转账保留");
+      } else if (action === "delete-budget") {
         state.budgets = state.budgets.filter((item) => item.id !== budgetId);
         saveState("分类预算已删除");
       } else if (action === "delete-goal") {
@@ -1739,26 +2508,6 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
         plan.paidPeriods += 1;
         if (plan.paidPeriods < plan.periods) plan.nextDate = advanceRecurringDate(plan.nextDate, "monthly");
         saveState("本期分期已记入");
-      } else if (action === "settle-reimbursement") {
-        const expense = state.transactions.find((item) => item.id === reimbursementId);
-        if (!expense || expense.reimburseStatus !== "pending") return;
-        const incomeCategory = currentCategories().find((item) => item.kind === "income") || currentCategories()[0];
-        const income = plannedTransaction({
-          type: "income",
-          amount: expense.amount,
-          categoryId: incomeCategory.id,
-          accountId: expense.accountId,
-          date: localDate(),
-          note: `报销到账：${expense.note || categoryById(expense.categoryId).name}`,
-          linkedTransactionId: expense.id,
-          currencyCode: expense.currencyCode,
-          exchangeRate: expense.exchangeRate
-        });
-        expense.reimburseStatus = "reimbursed";
-        expense.linkedTransactionId = income.id;
-        expense.updatedAt = new Date().toISOString();
-        state.transactions.push(income);
-        saveState("报销收入已关联到账");
       }
     });
 
@@ -1837,11 +2586,21 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
         const deletedAt = new Date().toISOString();
         const categories = state.categories.filter((candidate) => candidate.bookId === book.id);
         const transactions = state.transactions.filter((candidate) => candidate.bookId === book.id);
-        const scopedNames = ["members", "tags", "merchants", "budgets", "schedules", "installments", "templates"];
+        const transactionIds = new Set(transactions.map((candidate) => candidate.id));
+        const scopedNames = ["members", "tags", "merchants", "budgets", "schedules", "installments", "savingsPlans", "templates"];
         const scoped = Object.fromEntries(scopedNames.map((name) => [
           name,
           state[name].filter((candidate) => candidate.bookId === book.id)
         ]));
+        scoped.refunds = state.refunds.filter((candidate) => transactionIds.has(candidate.transactionId));
+        scoped.settlements = state.settlements.filter((candidate) => (
+          transactionIds.has(candidate.transactionId)
+          || candidate.sourceTransactionIds.some((id) => transactionIds.has(id))
+        ));
+        scoped.reimbursements = state.reimbursements.filter((candidate) => (
+          transactionIds.has(candidate.transactionId)
+          || candidate.sourceTransactionIds.some((id) => transactionIds.has(id))
+        ));
         state.recycleBin.push({
           id: makeId("trash"),
           entityType: "book",
@@ -1854,6 +2613,9 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
         scopedNames.forEach((name) => {
           state[name] = state[name].filter((candidate) => candidate.bookId !== book.id);
         });
+        state.refunds = state.refunds.filter((candidate) => !scoped.refunds.some((item) => item.id === candidate.id));
+        state.settlements = state.settlements.filter((candidate) => !scoped.settlements.some((item) => item.id === candidate.id));
+        state.reimbursements = state.reimbursements.filter((candidate) => !scoped.reimbursements.some((item) => item.id === candidate.id));
         if (state.activeBookId === book.id) state.activeBookId = state.books.find((candidate) => !candidate.hidden).id;
         resetTransactionForm();
         saveState("账本已移入回收站");
@@ -1906,13 +2668,16 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     elements.accountForm.addEventListener("submit", (event) => {
       event.preventDefault();
       const name = elements.newAccountName.value.trim();
-      if (state.accounts.some((item) => item.name === name)) {
+      if (state.accounts.some((item) => !item.deletedAt && item.name === name)) {
         showToast("账户名称已存在", true);
         return;
       }
+      const bookIds = [...elements.newAccountBooks.querySelectorAll("input:checked")].map((item) => item.value);
+      if (!bookIds.length) return showToast("请至少选择一个适用账本", true);
       state.accounts.push({
         id: makeId("acc"),
         name,
+        bookIds,
         type: elements.newAccountType.value,
         initialBalance: Number(elements.newAccountBalance.value) || 0,
         currencyCode: elements.newAccountCurrency.value,
@@ -1922,8 +2687,16 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
         credit: elements.newAccountType.value === "credit" ? {
           limit: Math.max(0, Number(elements.newAccountCreditLimit.value) || 0),
           billingDay: Number(elements.newAccountBillingDay.value) || null,
-          repaymentDay: Number(elements.newAccountRepaymentDay.value) || null
+          billingDayInNextCycle: elements.newAccountBillingDayNext.checked,
+          repaymentType: elements.newAccountRepaymentType.value,
+          repaymentDay: Number(elements.newAccountRepaymentDay.value) || null,
+          repaymentDelayDays: Number(elements.newAccountRepaymentDelay.value) || null,
+          sharedLimitAccountId: elements.newAccountSharedLimit.value || null,
+          repaymentReminderDays: []
         } : null,
+        expiresAt: null,
+        expiryReminderEnabled: false,
+        balanceReminder: null,
         deletedAt: null
       });
       elements.accountForm.reset();
@@ -1934,6 +2707,14 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
 
     elements.newAccountType.addEventListener("change", () => {
       elements.accountCreditFields.classList.toggle("is-hidden", elements.newAccountType.value !== "credit");
+      elements.newAccountBalance.placeholder = elements.newAccountType.value === "credit" ? "当前欠款" : "初始余额";
+    });
+
+    elements.newAccountCurrency.addEventListener("change", renderSelects);
+    elements.newAccountRepaymentType.addEventListener("change", () => {
+      const delay = elements.newAccountRepaymentType.value === "delay";
+      elements.newAccountRepaymentDay.classList.toggle("is-hidden", delay);
+      elements.newAccountRepaymentDelay.classList.toggle("is-hidden", !delay);
     });
 
     elements.accountList.addEventListener("click", (event) => {
@@ -1942,6 +2723,10 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       const id = button.dataset.accountId;
       const account = state.accounts.find((item) => item.id === id);
       if (!account) return;
+      if (button.dataset.accountAction === "statement") {
+        openCreditStatementDialog(account.id);
+        return;
+      }
       if (button.dataset.accountAction === "rename") {
         const name = window.prompt("请输入新的账户名称", account.name)?.trim();
         if (!name || name === account.name) return;
@@ -1950,12 +2735,74 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
         saveState("账户已重命名");
         return;
       }
-      if (state.accounts.length <= 1) return showToast("至少需要保留一个账户", true);
-      if (state.transactions.some((item) => item.accountId === id || item.targetAccountId === id)) {
-        return showToast("该账户已有账目，不能删除", true);
+      if (button.dataset.accountAction === "toggle-hidden") {
+        account.hidden = !account.hidden;
+        saveState(account.hidden ? "账户已隐藏" : "账户已显示");
+        return;
       }
-      state.accounts = state.accounts.filter((item) => item.id !== id);
-      saveState("账户已删除");
+      if (button.dataset.accountAction === "balance") {
+        if (!accountAvailableInBook(account, state.activeBookId)) return showToast("该账户不适用于当前账本", true);
+        const rate = currencyByCode(account.currencyCode).rate || 1;
+        const currentBalance = roundMoney((accountBalances()[account.id] || 0) / rate);
+        const actualBalance = Number(window.prompt(`当前账面余额 ${currentBalance}，请输入实际余额`, String(currentBalance)));
+        if (!Number.isFinite(actualBalance) || actualBalance === currentBalance) return;
+        const difference = roundMoney(actualBalance - currentBalance);
+        const type = difference > 0 ? "income" : "expense";
+        const category = currentCategories().find((item) => item.kind === type) || currentCategories()[0];
+        state.transactions.push({
+          id: makeId("tx"),
+          ...plannedTransaction({
+            type,
+            amount: Math.abs(difference),
+            categoryId: category.id,
+            accountId: account.id,
+            date: localDate(),
+            note: `余额调整：${account.name}`,
+            currencyCode: account.currencyCode,
+            exchangeRate: rate
+          }),
+          adjustment: { previousBalance: currentBalance, actualBalance },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+        saveState("余额差额已补记为收支");
+        return;
+      }
+      if (button.dataset.accountAction === "reconcile") {
+        const transactions = currentTransactions().filter((item) => item.accountId === id || item.targetAccountId === id);
+        if (!transactions.length) return showToast("当前账本没有需要核对的明细");
+        const markAsReconciled = transactions.some((item) => !item.reconciled);
+        const actionText = markAsReconciled ? "全部标记为已核对" : "全部标记为未核对";
+        if (!window.confirm(`确定${actionText}吗？`)) return;
+        transactions.forEach((item) => {
+          item.reconciled = markAsReconciled;
+          item.updatedAt = new Date().toISOString();
+        });
+        saveState(`${transactions.length} 笔明细已${markAsReconciled ? "核对" : "取消核对"}`);
+        return;
+      }
+      if (button.dataset.accountAction !== "delete") return;
+      const activeSavingsPlan = state.savingsPlans.find((plan) => (
+        !plan.deletedAt
+        && !savingsPlanProgress(state, plan).complete
+        && (plan.sourceAccountId === id || plan.targetAccountId === id)
+      ));
+      if (activeSavingsPlan) return showToast(`账户正用于“${activeSavingsPlan.name}”，请先完成或删除计划`, true);
+      const remainingAccounts = availableAccounts(state.activeBookId, { includeHidden: true }).filter((item) => item.id !== id);
+      if (!remainingAccounts.length) return showToast("当前账本至少需要保留一个账户", true);
+      const referenced = state.transactions.some((item) => !item.deletedAt && (item.accountId === id || item.targetAccountId === id));
+      const message = referenced
+        ? "删除账户不会删除已有明细，但该账户将不能继续记账。为保持历史资产统计，通常建议改用隐藏。确定删除吗？"
+        : "确定删除该账户吗？";
+      if (!window.confirm(message)) return;
+      account.deletedAt = new Date().toISOString();
+      state.recycleBin.push({
+        id: makeId("trash"),
+        entityType: "account",
+        deletedAt: account.deletedAt,
+        payload: structuredClone(account)
+      });
+      saveState("账户已移入回收站，历史明细已保留");
     });
 
     elements.memberForm.addEventListener("submit", (event) => {
@@ -2079,6 +2926,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       elements.lockDialog.close();
       elements.unlockPin.value = "";
       elements.lockError.textContent = "";
+      refreshAutoBookingCandidates({ showPrompt: true }).catch(() => {});
     });
     elements.lockDialog.addEventListener("cancel", (event) => event.preventDefault());
     document.addEventListener("visibilitychange", () => {
@@ -2104,11 +2952,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     });
     elements.loadNotificationCandidates.addEventListener("click", async () => {
       try {
-        const result = await loadNotificationCandidates();
-        autoBookingCandidates = [...autoBookingCandidates, ...(result.items || [])]
-          .filter((item, index, list) => list.findIndex((candidate) => candidate.id === item.id) === index);
-        renderAutoBookingCandidates();
-        await refreshAutoBookingStatus();
+        await refreshAutoBookingCandidates({ showPrompt: true });
       } catch (error) {
         showToast(error.message || "通知候选读取失败", true);
       }
@@ -2116,9 +2960,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     elements.loadSmsCandidates.addEventListener("click", async () => {
       try {
         const result = await loadSmsCandidates();
-        autoBookingCandidates = [...autoBookingCandidates, ...(result.items || [])]
-          .filter((item, index, list) => list.findIndex((candidate) => candidate.id === item.id) === index);
-        renderAutoBookingCandidates();
+        mergeAutoBookingCandidates(result.items || []);
         await refreshAutoBookingStatus();
       } catch (error) {
         showToast(error.message || "短信候选读取失败", true);
@@ -2130,11 +2972,8 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       if (!button || !row) return;
       const candidate = autoBookingCandidates.find((item) => item.id === row.dataset.candidateId);
       if (!candidate) return;
-      if (button.dataset.candidateAction === "parse") openParseDialog(candidate.text);
-      else {
-        autoBookingCandidates = autoBookingCandidates.filter((item) => item.id !== candidate.id);
-        renderAutoBookingCandidates();
-      }
+      if (button.dataset.candidateAction === "parse") openAutoBookingCandidate(candidate);
+      else finishAutoBookingCandidate(candidate.id, "dismissed");
     });
 
     elements.testSyncButton.addEventListener("click", () => runSyncAction(elements.testSyncButton, async () => {
@@ -2237,6 +3076,9 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       const item = state.recycleBin.find((candidate) => candidate.id === row.dataset.trashId);
       if (!item) return;
       if (button.dataset.trashAction === "delete") {
+        if (item.entityType === "savings-plan") {
+          state.savingsPlans = state.savingsPlans.filter((plan) => plan.id !== item.payload?.id);
+        }
         state.recycleBin = state.recycleBin.filter((candidate) => candidate.id !== item.id);
         saveState("已彻底删除");
         return;
@@ -2245,8 +3087,63 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
         const transaction = item.payload;
         if (!state.books.some((book) => book.id === transaction.bookId)) return showToast("原账本不存在，无法恢复该账目", true);
         if (!state.accounts.some((account) => account.id === transaction.accountId)) return showToast("原账户不存在，无法恢复该账目", true);
+        if (transaction.targetAccountId && !state.accounts.some((account) => account.id === transaction.targetAccountId)) {
+          return showToast("原转入账户不存在，无法恢复该账目", true);
+        }
         state.transactions.push(transaction);
+        if (transaction.settlementId) {
+          const settlement = state.settlements.find((candidate) => candidate.id === transaction.settlementId);
+          if (settlement) {
+            settlement.deletedAt = null;
+            settlement.sourceTransactionIds.forEach((sourceId) => {
+              const source = state.transactions.find((candidate) => candidate.id === sourceId);
+              if (source && remainingSettlementAmount(state, sourceId) === 0) source.status = "posted";
+            });
+          }
+        }
         state.activeBookId = transaction.bookId;
+      } else if (item.entityType === "reimbursement") {
+        const payload = item.payload;
+        const reimbursement = payload?.reimbursement;
+        const generatedTransactions = payload?.transactions || [];
+        if (!reimbursement || !generatedTransactions.length) return showToast("报销恢复数据不完整", true);
+        const sources = reimbursement.sourceTransactionIds.map((id) => state.transactions.find((transaction) => transaction.id === id));
+        if (sources.some((source) => !source)) return showToast("原待报销明细不存在，无法恢复", true);
+        if (generatedTransactions.some((transaction) => !state.books.some((book) => book.id === transaction.bookId))) {
+          return showToast("原账本不存在，无法恢复报销", true);
+        }
+        if (generatedTransactions.some((transaction) => !state.accounts.some((account) => account.id === transaction.accountId))) {
+          return showToast("原到账账户不存在，无法恢复报销", true);
+        }
+        const stored = state.reimbursements.find((candidate) => candidate.id === reimbursement.id);
+        if (stored) Object.assign(stored, reimbursement, { deletedAt: null });
+        else state.reimbursements.push({ ...reimbursement, deletedAt: null });
+        generatedTransactions.forEach((transaction) => {
+          if (!state.transactions.some((candidate) => candidate.id === transaction.id)) state.transactions.push(transaction);
+        });
+        sources.forEach((source) => {
+          source.reimburseStatus = "reimbursed";
+          source.reimbursementId = reimbursement.id;
+          source.relationGroupId = reimbursement.id;
+          source.linkedTransactionId = reimbursement.transactionId;
+          source.updatedAt = new Date().toISOString();
+        });
+        state.activeBookId = generatedTransactions[0].bookId;
+      } else if (item.entityType === "savings-plan") {
+        const plan = item.payload;
+        if (!plan || !state.books.some((book) => book.id === plan.bookId)) return showToast("原账本不存在，无法恢复计划", true);
+        if (![plan.sourceAccountId, plan.targetAccountId].every((id) => state.accounts.some((account) => account.id === id && !account.deletedAt))) {
+          return showToast("计划关联账户不存在，无法恢复", true);
+        }
+        const stored = state.savingsPlans.find((candidate) => candidate.id === plan.id);
+        if (stored) Object.assign(stored, plan, { deletedAt: null });
+        else state.savingsPlans.push({ ...plan, deletedAt: null });
+        state.activeBookId = plan.bookId;
+      } else if (item.entityType === "account") {
+        const account = state.accounts.find((candidate) => candidate.id === item.payload?.id);
+        if (!account) return showToast("账户数据不存在，无法恢复", true);
+        account.deletedAt = null;
+        account.hidden = false;
       } else if (item.entityType === "book") {
         const payload = item.payload;
         if (!payload?.book || state.books.some((book) => book.id === payload.book.id)) return showToast("账本无法恢复或已经存在", true);
@@ -2278,7 +3175,10 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       if (!secureSyncConfig?.autoEnabled || syncInProgress) return;
       uploadBackup(secureSyncConfig, { automatic: true }).catch(() => {});
     }).catch(() => {});
-    App.addListener("resume", lockAfterBackgroundIfNeeded).catch(() => {});
+    App.addListener("resume", () => {
+      lockAfterBackgroundIfNeeded();
+      if (!elements.lockDialog.open) refreshAutoBookingCandidates({ showPrompt: true }).catch(() => {});
+    }).catch(() => {});
     App.addListener("appUrlOpen", ({ url }) => {
       if (url?.startsWith("zhiji://record")) switchView("record");
     }).catch(() => {});
@@ -2287,6 +3187,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     }).catch(() => {});
     App.addListener("backButton", () => {
       if (elements.parseDialog.open) {
+        currentAutoBookingCandidateId = null;
         elements.parseDialog.close();
         return;
       }
@@ -2304,6 +3205,8 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     elements.transactionTime.value = new Date().toTimeString().slice(0, 5);
     elements.scheduleNextDate.value = localDate();
     elements.installmentNextDate.value = localDate();
+    elements.savingsPlanStartDate.value = localDate();
+    elements.savingsDepositDate.value = localDate();
     elements.statsMonth.value = monthKey();
     loadSyncConfig();
     bindEvents();
@@ -2316,6 +3219,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     refreshAutoBookingStatus();
     syncLedgerWidget();
     showAppLock();
+    if (!elements.lockDialog.open) refreshAutoBookingCandidates({ showPrompt: true }).catch(() => {});
   }
 
   document.addEventListener("DOMContentLoaded", init);

@@ -1,6 +1,6 @@
 {
   "name": "zhiji-local",
-  "version": "0.3.0",
+  "version": "0.7.0",
   "private": true,
   "description": "智记本地记账与坚果云同步应用",
   "scripts": {

@@ -5,28 +5,30 @@ import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
 public class BookingAccessibilityService extends AccessibilityService {
-    private String lastText = "";
+    private String lastFingerprint = "";
     private long lastCapturedAt = 0;
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         if (event == null || event.getPackageName() == null) return;
+        String sourcePackage = event.getPackageName().toString();
+        if (!BookingCandidateParser.isAllowedPackage(sourcePackage)) return;
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
         StringBuilder content = new StringBuilder();
         collectText(root, content, 0);
-        String text = content.toString().trim();
         long now = System.currentTimeMillis();
-        if (!BookingNotificationService.isCandidate(text)) return;
-        if (text.equals(lastText) && now - lastCapturedAt < 5000) return;
-        lastText = text;
+        BookingCandidateParser.Candidate candidate = BookingCandidateParser.parse(
+            sourcePackage, content.toString(), now, "accessibility");
+        if (candidate == null) return;
+        if (candidate.fingerprint.equals(lastFingerprint) && now - lastCapturedAt < 5000L) return;
+        lastFingerprint = candidate.fingerprint;
         lastCapturedAt = now;
-        String source = event.getPackageName().toString();
-        BookingNotificationService.enqueueCandidate(this, "accessibility-" + source + "-" + now, source, text, now);
+        BookingNotificationService.enqueueCandidate(this, candidate);
     }
 
     private void collectText(AccessibilityNodeInfo node, StringBuilder content, int depth) {
-        if (node == null || depth > 12 || content.length() > 600) return;
+        if (node == null || depth > 14 || content.length() > 1200) return;
         if (node.getText() != null) content.append(node.getText()).append(' ');
         if (node.getContentDescription() != null) content.append(node.getContentDescription()).append(' ');
         for (int index = 0; index < node.getChildCount(); index += 1) {

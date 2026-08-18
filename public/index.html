@@ -298,6 +298,14 @@
             </section>
 
             <section class="panel">
+              <div class="section-heading compact">
+                <div><p class="eyebrow">真实账户转账</p><h2>存钱计划</h2></div>
+                <button class="secondary-button compact-button" id="open-savings-plan" type="button">新建计划</button>
+              </div>
+              <div class="plan-list" id="savings-plan-list"></div>
+            </section>
+
+            <section class="panel">
               <div class="section-heading compact"><div><p class="eyebrow">积累进度</p><h2>储蓄目标</h2></div></div>
               <form id="goal-form" class="plan-form">
                 <input id="goal-name" type="text" maxlength="20" placeholder="目标名称" required />
@@ -339,9 +347,18 @@
           <section class="transactions-section">
             <div class="section-heading compact">
               <div><p class="eyebrow">资金回收</p><h2>待报销</h2></div>
-              <span class="local-chip" id="reimbursement-total">¥0.00</span>
+              <button class="secondary-button compact-button" id="batch-reimbursement" type="button">确认报销</button>
             </div>
+            <p class="section-inline-summary">待报销合计 <strong id="reimbursement-total">¥0.00</strong></p>
             <div class="plan-list" id="reimbursement-list"></div>
+          </section>
+
+          <section class="transactions-section">
+            <div class="section-heading compact">
+              <div><p class="eyebrow">待处理款项</p><h2>应收应付</h2></div>
+              <button class="secondary-button compact-button" id="batch-settlement" type="button">批量结算</button>
+            </div>
+            <div class="plan-list" id="pending-settlement-list"></div>
           </section>
         </section>
 
@@ -436,10 +453,17 @@
                   </select>
                   <select id="new-account-currency" aria-label="账户币种"></select>
                   <input id="new-account-balance" type="number" step="0.01" placeholder="初始余额" required />
+                  <fieldset class="choice-list account-book-choices" id="new-account-books">
+                    <legend>适用账本</legend>
+                  </fieldset>
                   <div class="account-credit-fields is-hidden" id="account-credit-fields">
                     <input id="new-account-credit-limit" type="number" min="0" step="100" placeholder="信用额度" />
                     <input id="new-account-billing-day" type="number" min="1" max="31" placeholder="账单日" />
+                    <label class="check-row account-credit-check"><input id="new-account-billing-day-next" type="checkbox" /><span>账单日消费计入下期</span></label>
+                    <select id="new-account-repayment-type" aria-label="还款日类型"><option value="fixed">固定还款日</option><option value="delay">账单日后间隔</option></select>
                     <input id="new-account-repayment-day" type="number" min="1" max="31" placeholder="还款日" />
+                    <input class="is-hidden" id="new-account-repayment-delay" type="number" min="1" max="60" placeholder="还款间隔天数" />
+                    <select id="new-account-shared-limit" aria-label="额度共享"><option value="">独立额度</option></select>
                   </div>
                   <button class="icon-button small" type="submit" title="新增账户" aria-label="新增账户">＋</button>
                 </form>
@@ -506,7 +530,7 @@
                 <div class="data-actions auto-booking-actions">
                   <button class="secondary-button" id="open-notification-access" type="button">通知使用权</button>
                   <button class="secondary-button" id="open-accessibility-access" type="button">无障碍设置</button>
-                  <button class="secondary-button" id="load-notification-candidates" type="button">读取通知候选</button>
+                  <button class="secondary-button" id="load-notification-candidates" type="button">刷新自动候选</button>
                   <button class="secondary-button" id="load-sms-candidates" type="button">读取短信候选</button>
                 </div>
                 <div class="plan-list" id="auto-booking-list"></div>
@@ -584,6 +608,127 @@
           <button class="primary-button" id="confirm-parsed-button" value="default" type="submit">确认保存</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="savings-plan-dialog">
+      <form class="dialog-shell" id="savings-plan-form">
+        <div class="dialog-header">
+          <div><p class="eyebrow">资金计划</p><h2>新建存钱计划</h2></div>
+          <button class="icon-button small" data-dialog-close="savingsPlanDialog" type="button" title="关闭" aria-label="关闭">×</button>
+        </div>
+        <div class="form-grid compact-form">
+          <label class="field"><span>计划模板</span><select id="savings-plan-template"><option value="daily365">365 天递增</option><option value="weekly52">52 周递增</option><option value="monthlyFixed">每月定额</option><option value="custom">自定义</option></select></label>
+          <label class="field"><span>计划名称</span><input id="savings-plan-name" type="text" maxlength="24" required /></label>
+          <label class="field"><span>转出账户</span><select id="savings-plan-source" required></select></label>
+          <label class="field"><span>存款账户</span><select id="savings-plan-target" required></select></label>
+          <label class="field"><span>开始日期</span><input id="savings-plan-start-date" type="date" required /></label>
+          <label class="field"><span>周期</span><select id="savings-plan-frequency"><option value="daily">每天</option><option value="weekly">每周</option><option value="monthly">每月</option></select></label>
+          <label class="field"><span>期数</span><input id="savings-plan-periods" type="number" min="1" max="1000" step="1" required /></label>
+          <label class="field"><span>首期金额</span><input id="savings-plan-start-amount" type="number" min="0.01" step="0.01" required /></label>
+          <label class="field"><span>每期递增</span><input id="savings-plan-increment" type="number" min="0" step="0.01" required /></label>
+        </div>
+        <p class="dialog-summary savings-plan-preview" id="savings-plan-preview"></p>
+        <div class="dialog-actions">
+          <button class="secondary-button" data-dialog-close="savingsPlanDialog" type="button">取消</button>
+          <button class="primary-button" type="submit">创建计划</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="savings-deposit-dialog">
+      <form class="dialog-shell" id="savings-deposit-form">
+        <input id="savings-deposit-plan-id" type="hidden" />
+        <div class="dialog-header">
+          <div><p class="eyebrow">确认转账</p><h2 id="savings-deposit-title">存入一期</h2></div>
+          <button class="icon-button small" data-dialog-close="savingsDepositDialog" type="button" title="关闭" aria-label="关闭">×</button>
+        </div>
+        <p class="dialog-summary" id="savings-deposit-summary"></p>
+        <label class="field"><span>记账日期</span><input id="savings-deposit-date" type="date" required /></label>
+        <div class="dialog-actions">
+          <button class="secondary-button" data-dialog-close="savingsDepositDialog" type="button">取消</button>
+          <button class="primary-button" type="submit">确认转账</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="refund-dialog">
+      <form class="dialog-shell" id="refund-form">
+        <input id="refund-transaction-id" type="hidden" />
+        <div class="dialog-header">
+          <div><p class="eyebrow">退款记录</p><h2 id="refund-dialog-title">记录退款</h2></div>
+          <button class="icon-button small" data-dialog-close="refundDialog" type="button" title="关闭" aria-label="关闭">×</button>
+        </div>
+        <p class="dialog-summary" id="refund-remaining"></p>
+        <div class="form-grid compact-form">
+          <label class="field"><span>退款金额</span><input id="refund-amount" type="number" min="0.01" step="0.01" required /></label>
+          <label class="field"><span>退款账户</span><select id="refund-account" required></select></label>
+          <label class="field"><span>账户折合金额</span><input id="refund-account-amount" type="number" min="0.01" step="0.01" required /></label>
+          <label class="field"><span>退款日期</span><input id="refund-date" type="date" required /></label>
+          <label class="field full-width"><span>备注</span><input id="refund-note" type="text" maxlength="80" placeholder="可选" /></label>
+        </div>
+        <div class="dialog-actions">
+          <button class="secondary-button" data-dialog-close="refundDialog" type="button">取消</button>
+          <button class="primary-button" type="submit">保存退款</button>
+        </div>
+        <div class="manage-block">
+          <div class="manage-heading"><h3>退款记录</h3></div>
+          <div class="plan-list" id="refund-record-list"></div>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="settlement-dialog">
+      <form class="dialog-shell" id="settlement-form">
+        <input id="settlement-transaction-id" type="hidden" />
+        <div class="dialog-header">
+          <div><p class="eyebrow">应收应付</p><h2 id="settlement-dialog-title">确认结算</h2></div>
+          <button class="icon-button small" data-dialog-close="settlementDialog" type="button" title="关闭" aria-label="关闭">×</button>
+        </div>
+        <p class="dialog-summary" id="settlement-remaining"></p>
+        <div class="form-grid compact-form">
+          <label class="field"><span>本次金额</span><input id="settlement-amount" type="number" min="0.01" step="0.01" required /></label>
+          <label class="field"><span>结算账户</span><select id="settlement-account" required></select></label>
+          <label class="field"><span>结算日期</span><input id="settlement-date" type="date" required /></label>
+          <label class="field full-width"><span>备注</span><input id="settlement-note" type="text" maxlength="80" placeholder="可选" /></label>
+        </div>
+        <div class="dialog-actions">
+          <button class="secondary-button" data-dialog-close="settlementDialog" type="button">取消</button>
+          <button class="primary-button" type="submit">确认结算</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="reimbursement-dialog">
+      <form class="dialog-shell" id="reimbursement-form">
+        <input id="reimbursement-transaction-ids" type="hidden" />
+        <div class="dialog-header">
+          <div><p class="eyebrow">报销管理</p><h2>确认报销到账</h2></div>
+          <button class="icon-button small" data-dialog-close="reimbursementDialog" type="button" title="关闭" aria-label="关闭">×</button>
+        </div>
+        <p class="dialog-summary" id="reimbursement-summary"></p>
+        <div class="form-grid compact-form">
+          <label class="field"><span>实际到账金额</span><input id="reimbursement-actual-amount" type="number" min="0.01" step="0.01" required /></label>
+          <label class="field"><span>到账账户</span><select id="reimbursement-account" required></select></label>
+          <label class="field"><span>到账日期</span><input id="reimbursement-date" type="date" required /></label>
+          <label class="field full-width"><span>备注</span><input id="reimbursement-note" type="text" maxlength="80" placeholder="可选" /></label>
+        </div>
+        <p class="field-help">待报销本金不计普通收入；实际到账与待报销合计的差额会单独记为收入或支出。</p>
+        <div class="dialog-actions">
+          <button class="secondary-button" data-dialog-close="reimbursementDialog" type="button">取消</button>
+          <button class="primary-button" type="submit">确认到账</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="credit-statement-dialog">
+      <section class="dialog-shell">
+        <div class="dialog-header">
+          <div><p class="eyebrow">信用账户</p><h2 id="credit-statement-title">账单详情</h2></div>
+          <button class="icon-button small" data-dialog-close="creditStatementDialog" type="button" title="关闭" aria-label="关闭">×</button>
+        </div>
+        <div class="credit-statement-summary" id="credit-statement-summary"></div>
+        <div class="plan-list" id="credit-statement-list"></div>
+      </section>
     </dialog>
 
     <dialog id="lock-dialog" class="lock-dialog">

@@ -17,11 +17,11 @@ test("默认账本包含完整业务集合", () => {
   assert.equal(state.books.length, 1);
   assert.equal(state.books[0].monthlyBudget, 5000);
   assert.equal(state.currencies[0].code, "CNY");
-  ["members", "tags", "merchants", "budgets", "schedules", "installments", "templates", "recycleBin"]
+  ["members", "tags", "merchants", "budgets", "schedules", "installments", "savingsPlans", "templates", "recycleBin"]
     .forEach((name) => assert.ok(Array.isArray(state[name]), `${name} 应为数组`));
 });
 
-test("旧版单账本数据会无损迁移到版本 2", () => {
+test("旧版单账本数据会无损迁移到最新版本", () => {
   const oldState = {
     version: 1,
     settings: { monthlyBudget: 0 },
@@ -41,10 +41,11 @@ test("旧版单账本数据会无损迁移到版本 2", () => {
 
   const state = normalizeLedger(oldState, now);
 
-  assert.equal(state.version, 2);
+  assert.equal(state.version, SCHEMA_VERSION);
   assert.equal(state.settings.monthlyBudget, 0);
   assert.equal(state.books[0].monthlyBudget, 0);
   assert.equal(state.accounts[0].initialBalance, 88.5);
+  assert.deepEqual(state.accounts[0].bookIds, [DEFAULT_BOOK_ID]);
   assert.equal(state.transactions[0].amount, 12.3);
   assert.equal(state.transactions[0].bookId, DEFAULT_BOOK_ID);
   assert.equal(state.transactions[0].note, "保留备注");
@@ -69,7 +70,7 @@ test("迁移会过滤损坏记录并保留扩展业务集合", () => {
   assert.deepEqual(state.budgets.map((item) => item.id), ["budget-1"]);
 });
 
-test("版本 2 数据再次规范化保持业务标识", () => {
+test("最新版本数据再次规范化保持业务标识", () => {
   const original = createDefaultLedger(now);
   original.books.push({ id: "book-trip", name: "旅行", monthlyBudget: 2600, createdAt: now });
   original.activeBookId = "book-trip";
@@ -81,4 +82,151 @@ test("版本 2 数据再次规范化保持业务标识", () => {
   assert.equal(normalized.books.find((item) => item.id === "book-trip").monthlyBudget, 2600);
   assert.equal(normalized.templates[0].id, "tpl-1");
   assert.equal(normalized.metadata.migratedFrom, null);
+});
+
+test("版本 2 账户迁移后适用于原有全部账本", () => {
+  const state = normalizeLedger({
+    version: 2,
+    activeBookId: "book-trip",
+    books: [
+      { id: DEFAULT_BOOK_ID, name: "日常", monthlyBudget: 1000 },
+      { id: "book-trip", name: "旅行", monthlyBudget: 2000 },
+    ],
+    accounts: [{ id: "acc-1", name: "银行卡", type: "bank" }],
+  }, now);
+
+  assert.equal(state.version, SCHEMA_VERSION);
+  assert.deepEqual(state.accounts[0].bookIds, [DEFAULT_BOOK_ID, "book-trip"]);
+  assert.equal(state.metadata.migratedFrom, 2);
+});
+
+test("退款、结算和信用扩展字段会被规范化", () => {
+  const state = normalizeLedger({
+    version: 3,
+    accounts: [{
+      id: "acc-credit",
+      name: "信用卡",
+      type: "credit",
+      bookIds: [DEFAULT_BOOK_ID, DEFAULT_BOOK_ID, "missing"],
+      credit: {
+        limit: "10000",
+        billingDay: "5",
+        billingDayInNextCycle: true,
+        repaymentType: "delay",
+        repaymentDelayDays: "20",
+        repaymentReminderDays: [7, 0, -1, 2.5],
+      },
+    }],
+    categories: [{ id: "cat-1", name: "购物", kind: "expense" }],
+    transactions: [{
+      id: "tx-1",
+      type: "expense",
+      amount: 100,
+      accountId: "acc-credit",
+      categoryId: "cat-1",
+      date: "2026-08-01",
+      autoBookingCandidateId: "candidate-1",
+    }],
+    refunds: [{
+      id: "refund-1",
+      transactionId: "tx-1",
+      accountId: "acc-credit",
+      amount: "30",
+      date: "2026-08-02",
+    }],
+    settlements: [{
+      id: "settlement-1",
+      sourceTransactionIds: ["tx-1", "tx-1"],
+      transactionId: "tx-income",
+      amount: "30",
+    }],
+  }, now);
+
+  assert.deepEqual(state.accounts[0].bookIds, [DEFAULT_BOOK_ID]);
+  assert.equal(state.accounts[0].credit.limit, 10000);
+  assert.equal(state.accounts[0].credit.repaymentType, "delay");
+  assert.deepEqual(state.accounts[0].credit.repaymentReminderDays, [7, 0]);
+  assert.equal(state.refunds[0].accountAmount, 30);
+  assert.deepEqual(state.settlements[0].sourceTransactionIds, ["tx-1"]);
+  assert.equal(state.transactions[0].autoBookingCandidateId, "candidate-1");
+});
+
+test("版本 3 的已报销关联迁移为严格报销记录", () => {
+  const state = normalizeLedger({
+    version: 3,
+    accounts: [{ id: "acc-1", name: "现金", type: "cash" }],
+    categories: [
+      { id: "cat-expense", name: "差旅", kind: "expense" },
+      { id: "cat-income", name: "工资", kind: "income" },
+    ],
+    transactions: [{
+      id: "expense-1",
+      type: "expense",
+      amount: 100,
+      accountId: "acc-1",
+      categoryId: "cat-expense",
+      date: "2026-08-01",
+      reimburseStatus: "reimbursed",
+      linkedTransactionId: "income-1",
+    }, {
+      id: "income-1",
+      type: "income",
+      amount: 100,
+      accountId: "acc-1",
+      categoryId: "cat-income",
+      date: "2026-08-05",
+      linkedTransactionId: "expense-1",
+    }],
+  }, now);
+
+  assert.equal(state.version, SCHEMA_VERSION);
+  assert.equal(state.reimbursements.length, 1);
+  assert.deepEqual(state.reimbursements[0].sourceTransactionIds, ["expense-1"]);
+  assert.equal(state.transactions.find((item) => item.id === "expense-1").reimbursementId, state.reimbursements[0].id);
+  assert.equal(state.transactions.find((item) => item.id === "income-1").generatedBy.kind, "reimbursement");
+  assert.equal(state.metadata.migratedFrom, 3);
+});
+
+test("版本 4 数据升级后保留存钱计划和转账期次", () => {
+  const state = normalizeLedger({
+    version: 4,
+    books: [{ id: DEFAULT_BOOK_ID, name: "日常", monthlyBudget: 5000 }],
+    accounts: [
+      { id: "acc-source", name: "工资卡", type: "bank", currencyCode: "CNY" },
+      { id: "acc-target", name: "存款账户", type: "bank", currencyCode: "CNY" },
+    ],
+    categories: [{ id: "cat-transfer", name: "转账", kind: "transfer" }],
+    transactions: [{
+      id: "tx-saving",
+      bookId: DEFAULT_BOOK_ID,
+      type: "transfer",
+      amount: 1,
+      accountId: "acc-source",
+      targetAccountId: "acc-target",
+      date: "2026-08-18",
+      savingsPlanId: "saving-365",
+      savingsPlanPeriod: 1,
+    }],
+    savingsPlans: [{
+      id: "saving-365",
+      bookId: DEFAULT_BOOK_ID,
+      name: "365天存钱计划",
+      template: "daily365",
+      sourceAccountId: "acc-source",
+      targetAccountId: "acc-target",
+      startDate: "2026-08-18",
+      frequency: "daily",
+      totalPeriods: 365,
+      startAmount: 1,
+      incrementAmount: 1,
+      targetAmount: 66795,
+      status: "active",
+    }],
+  }, now);
+
+  assert.equal(state.version, SCHEMA_VERSION);
+  assert.equal(state.savingsPlans[0].targetAmount, 66795);
+  assert.equal(state.transactions[0].savingsPlanId, "saving-365");
+  assert.equal(state.transactions[0].savingsPlanPeriod, 1);
+  assert.equal(state.metadata.migratedFrom, 4);
 });

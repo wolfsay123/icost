@@ -1000,6 +1000,32 @@ textarea:focus {
   background: var(--surface);
 }
 
+.pending-settlement-item {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.pending-settlement-item > input {
+  width: 18px;
+  height: 18px;
+}
+
+.compact-button {
+  width: auto;
+  min-height: 38px;
+  padding: 0 14px;
+}
+
+.section-inline-summary,
+.field-help {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.section-inline-summary strong {
+  color: var(--ink);
+}
+
 .plan-copy strong,
 .plan-copy small {
   display: block;
@@ -1202,7 +1228,7 @@ textarea:focus {
 
 .account-manage-item {
   display: grid;
-  grid-template-columns: 1fr auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   min-height: 38px;
@@ -1214,10 +1240,34 @@ textarea:focus {
   font-size: 13px;
 }
 
+.account-manage-item > span small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.account-manage-item.is-muted {
+  opacity: 0.62;
+}
+
+.account-manage-actions {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-bottom: 7px;
+}
+
 .account-manage-item button {
   border: 0;
   color: #989e9a;
   background: transparent;
+}
+
+.account-manage-item button.danger {
+  color: var(--expense);
 }
 
 .add-account-form {
@@ -1237,8 +1287,27 @@ textarea:focus {
 .account-credit-fields {
   display: grid;
   grid-column: 1 / -1;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.account-credit-check {
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.account-book-choices {
+  grid-column: 1 / -1;
+  padding: 8px;
+}
+
+.account-book-choices legend {
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .add-simple-form {
@@ -1369,6 +1438,53 @@ dialog::backdrop {
 .dialog-header h2 {
   margin: 4px 0 0;
   font-size: 21px;
+}
+
+.dialog-summary {
+  margin: 18px 0;
+  border-left: 3px solid var(--accent);
+  padding: 10px 12px;
+  color: var(--muted);
+  background: #faf7f2;
+  font-size: 13px;
+}
+
+.credit-statement-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin: 18px 0;
+  background: var(--line);
+}
+
+.credit-statement-summary span {
+  min-width: 0;
+  padding: 12px;
+  background: var(--surface);
+}
+
+.credit-statement-summary small,
+.credit-statement-summary strong {
+  display: block;
+}
+
+.credit-statement-summary small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.credit-statement-summary strong {
+  margin-top: 5px;
+  font-size: 16px;
+}
+
+.credit-statement-summary p {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 10px 12px;
+  color: var(--expense);
+  background: #fff8f5;
+  font-size: 12px;
 }
 
 .confidence-row {
@@ -1641,6 +1757,10 @@ dialog::backdrop {
     grid-template-columns: 1fr;
   }
 
+  .credit-statement-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .stats-summary div {
     display: flex;
     align-items: center;
@@ -1672,6 +1792,31 @@ dialog::backdrop {
   .book-actions {
     grid-column: 2;
     flex-wrap: wrap;
+  }
+
+  .account-manage-item {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    padding: 8px 0;
+  }
+
+  .account-manage-item strong,
+  .account-manage-actions {
+    grid-column: 1;
+  }
+
+  .account-manage-actions {
+    justify-content: flex-start;
+    padding-bottom: 0;
+  }
+
+  .savings-plan-item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .savings-plan-item .plan-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
   }
 
   .sync-actions {

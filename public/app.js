@@ -581,7 +581,7 @@
 
   // src/ledger-schema.mjs
   var STORAGE_KEY = "zhiji.local.v1";
-  var SCHEMA_VERSION = 2;
+  var SCHEMA_VERSION = 5;
   var DEFAULT_BOOK_ID = "book-default";
   var DEFAULT_CURRENCY = "CNY";
   var TRANSACTION_TYPES = /* @__PURE__ */ new Set([
@@ -625,6 +625,7 @@
     "schedules",
     "installments",
     "templates",
+    "importBatches",
     "recycleBin"
   ];
   function validEntity(item) {
@@ -677,14 +678,22 @@
       })),
       accounts: DEFAULT_ACCOUNTS.map((item, order) => ({
         ...item,
+        bookIds: [DEFAULT_BOOK_ID],
         currencyCode: DEFAULT_CURRENCY,
         includeInNetAssets: true,
         hidden: false,
         order,
         credit: null,
+        expiresAt: null,
+        expiryReminderEnabled: false,
+        balanceReminder: null,
         deletedAt: null
       })),
       transactions: [],
+      refunds: [],
+      settlements: [],
+      reimbursements: [],
+      savingsPlans: [],
       members: [],
       tagGroups: [],
       tags: [],
@@ -694,6 +703,7 @@
       schedules: [],
       installments: [],
       templates: [],
+      importBatches: [],
       currencies: [{ code: DEFAULT_CURRENCY, name: "\u4EBA\u6C11\u5E01", symbol: "\xA5", rate: 1 }],
       recycleBin: [],
       metadata: {
@@ -744,11 +754,29 @@
       name: String(item.name),
       type: accountType(item),
       initialBalance: finiteNumber(item.initialBalance),
+      bookIds: Array.isArray(item.bookIds) && item.bookIds.length ? [...new Set(item.bookIds.filter((bookId) => books.some((book) => book.id === bookId)))] : books.map((book) => book.id),
       currencyCode: item.currencyCode || raw.baseCurrency || DEFAULT_CURRENCY,
       includeInNetAssets: item.includeInNetAssets !== false,
       hidden: Boolean(item.hidden),
       order: finiteNumber(item.order, order),
-      credit: item.credit && typeof item.credit === "object" ? item.credit : null,
+      credit: item.credit && typeof item.credit === "object" ? {
+        ...item.credit,
+        limit: Math.max(0, finiteNumber(item.credit.limit)),
+        billingDay: item.credit.billingDay == null ? null : finiteNumber(item.credit.billingDay),
+        billingDayInNextCycle: Boolean(item.credit.billingDayInNextCycle),
+        repaymentType: item.credit.repaymentType === "delay" ? "delay" : "fixed",
+        repaymentDay: item.credit.repaymentDay == null ? null : finiteNumber(item.credit.repaymentDay),
+        repaymentDelayDays: item.credit.repaymentDelayDays == null ? null : Math.max(0, finiteNumber(item.credit.repaymentDelayDays)),
+        sharedLimitAccountId: item.credit.sharedLimitAccountId || null,
+        repaymentReminderDays: Array.isArray(item.credit.repaymentReminderDays) ? item.credit.repaymentReminderDays.filter((day) => Number.isInteger(day) && day >= 0) : []
+      } : null,
+      expiresAt: item.expiresAt || null,
+      expiryReminderEnabled: Boolean(item.expiryReminderEnabled),
+      balanceReminder: item.balanceReminder && typeof item.balanceReminder === "object" ? {
+        enabled: Boolean(item.balanceReminder.enabled),
+        direction: item.balanceReminder.direction === "above" ? "above" : "below",
+        amount: Math.max(0, finiteNumber(item.balanceReminder.amount))
+      } : null,
       deletedAt: item.deletedAt || null
     })) : [];
     const transactions = Array.isArray(raw.transactions) ? raw.transactions.filter((item) => validEntity(item) && TRANSACTION_TYPES.has(item.type) && finiteNumber(item.amount) > 0 && item.accountId && item.date).map((item) => ({
@@ -771,9 +799,104 @@
       photos: Array.isArray(item.photos) ? item.photos : [],
       location: item.location && typeof item.location === "object" ? item.location : null,
       linkedTransactionId: item.linkedTransactionId || null,
+      relationGroupId: item.relationGroupId || null,
+      reimbursementId: item.reimbursementId || null,
+      savingsPlanId: item.savingsPlanId || null,
+      savingsPlanPeriod: item.savingsPlanPeriod == null ? null : finiteNumber(item.savingsPlanPeriod),
+      autoBookingCandidateId: item.autoBookingCandidateId || null,
+      importBatchId: item.importBatchId || null,
+      generatedBy: item.generatedBy && typeof item.generatedBy === "object" ? item.generatedBy : null,
       reconciled: Boolean(item.reconciled),
       deletedAt: item.deletedAt || null
     })) : [];
+    const refunds = Array.isArray(raw.refunds) ? raw.refunds.filter((item) => validEntity(item) && item.transactionId && item.accountId && finiteNumber(item.amount) > 0 && item.date).map((item) => ({
+      ...item,
+      amount: finiteNumber(item.amount),
+      accountAmount: finiteNumber(item.accountAmount, finiteNumber(item.amount)),
+      currencyCode: item.currencyCode || raw.baseCurrency || DEFAULT_CURRENCY,
+      exchangeRate: finiteNumber(item.exchangeRate, 1) || 1,
+      time: item.time || "12:00",
+      note: String(item.note || ""),
+      deletedAt: item.deletedAt || null
+    })) : [];
+    const settlements = Array.isArray(raw.settlements) ? raw.settlements.filter((item) => validEntity(item) && Array.isArray(item.sourceTransactionIds) && item.sourceTransactionIds.length && item.transactionId && finiteNumber(item.amount) > 0).map((item) => ({
+      ...item,
+      sourceTransactionIds: [...new Set(item.sourceTransactionIds.filter(Boolean))],
+      amount: finiteNumber(item.amount),
+      allocations: item.allocations && typeof item.allocations === "object" ? Object.fromEntries(Object.entries(item.allocations).filter(([id, amount]) => id && finiteNumber(amount) > 0).map(([id, amount]) => [id, finiteNumber(amount)])) : null,
+      deletedAt: item.deletedAt || null
+    })) : [];
+    const reimbursements = Array.isArray(raw.reimbursements) ? raw.reimbursements.filter((item) => validEntity(item) && Array.isArray(item.sourceTransactionIds) && item.sourceTransactionIds.length && item.transactionId && finiteNumber(item.expectedAmount) > 0 && finiteNumber(item.actualAmount) > 0).map((item) => ({
+      ...item,
+      sourceTransactionIds: [...new Set(item.sourceTransactionIds.filter(Boolean))],
+      accountId: item.accountId || null,
+      expectedAmount: finiteNumber(item.expectedAmount),
+      actualAmount: finiteNumber(item.actualAmount),
+      receiptAmount: finiteNumber(item.receiptAmount, finiteNumber(item.expectedAmount)),
+      differenceAmount: Math.max(0, finiteNumber(item.differenceAmount)),
+      differenceType: ["income", "expense"].includes(item.differenceType) ? item.differenceType : null,
+      differenceTransactionId: item.differenceTransactionId || null,
+      allocations: item.allocations && typeof item.allocations === "object" ? Object.fromEntries(Object.entries(item.allocations).filter(([id, amount]) => id && finiteNumber(amount) > 0).map(([id, amount]) => [id, finiteNumber(amount)])) : null,
+      currencyCode: item.currencyCode || raw.baseCurrency || DEFAULT_CURRENCY,
+      exchangeRate: finiteNumber(item.exchangeRate, 1) || 1,
+      date: item.date || now.slice(0, 10),
+      note: String(item.note || ""),
+      deletedAt: item.deletedAt || null
+    })) : [];
+    const savingsPlans = Array.isArray(raw.savingsPlans) ? raw.savingsPlans.filter((item) => validEntity(item) && item.name && item.sourceAccountId && item.targetAccountId && item.startDate && finiteNumber(item.totalPeriods) > 0 && finiteNumber(item.startAmount) > 0).map((item) => ({
+      ...item,
+      bookId: item.bookId || activeBookId,
+      name: String(item.name),
+      template: ["daily365", "weekly52", "monthlyFixed", "custom"].includes(item.template) ? item.template : "custom",
+      sourceAccountId: item.sourceAccountId,
+      targetAccountId: item.targetAccountId,
+      currencyCode: item.currencyCode || raw.baseCurrency || DEFAULT_CURRENCY,
+      startDate: item.startDate,
+      frequency: ["daily", "weekly", "monthly"].includes(item.frequency) ? item.frequency : "monthly",
+      totalPeriods: Math.min(1e3, Math.max(1, Math.trunc(finiteNumber(item.totalPeriods, 1)))),
+      startAmount: Math.max(0.01, finiteNumber(item.startAmount, 0.01)),
+      incrementAmount: Math.max(0, finiteNumber(item.incrementAmount)),
+      targetAmount: Math.max(0.01, finiteNumber(item.targetAmount, finiteNumber(item.startAmount, 0.01))),
+      status: item.status === "paused" ? "paused" : "active",
+      deletedAt: item.deletedAt || null,
+      createdAt: item.createdAt || now
+    })) : [];
+    if (sourceVersion < 4) {
+      const migratedSourceIds = new Set(reimbursements.flatMap((item) => item.sourceTransactionIds));
+      transactions.filter((item) => item.type === "expense" && item.reimburseStatus === "reimbursed" && item.linkedTransactionId && !migratedSourceIds.has(item.id)).forEach((source) => {
+        const receipt = transactions.find((item) => item.id === source.linkedTransactionId && item.type === "income");
+        if (!receipt) return;
+        const id = `reimbursement-migrated-${source.id}`;
+        const expectedAmount = finiteNumber(source.amount);
+        const actualAmount = finiteNumber(receipt.amount, expectedAmount);
+        const difference = actualAmount - expectedAmount;
+        reimbursements.push({
+          id,
+          sourceTransactionIds: [source.id],
+          accountId: receipt.accountId,
+          expectedAmount,
+          actualAmount,
+          receiptAmount: expectedAmount,
+          differenceAmount: Math.abs(difference),
+          differenceType: difference > 0 ? "income" : difference < 0 ? "expense" : null,
+          transactionId: receipt.id,
+          differenceTransactionId: null,
+          allocations: { [source.id]: expectedAmount },
+          currencyCode: receipt.currencyCode,
+          exchangeRate: receipt.exchangeRate,
+          date: receipt.date,
+          note: receipt.note,
+          deletedAt: null,
+          createdAt: receipt.createdAt || now
+        });
+        source.reimbursementId = id;
+        source.relationGroupId = id;
+        receipt.reimbursementId = id;
+        receipt.relationGroupId = id;
+        receipt.generatedBy = { kind: "reimbursement", reimbursementId: id };
+        migratedSourceIds.add(source.id);
+      });
+    }
     const monthlyBudget = finiteNumber(raw.settings?.monthlyBudget, fallback.settings.monthlyBudget);
     const state = {
       ...fallback,
@@ -789,6 +912,10 @@
       categories: categories.length ? categories : fallback.categories,
       accounts: accounts.length ? accounts : fallback.accounts,
       transactions,
+      refunds,
+      settlements,
+      reimbursements,
+      savingsPlans,
       currencies: Array.isArray(raw.currencies) && raw.currencies.length ? raw.currencies.filter((item) => item && item.code).map((item) => ({
         ...item,
         rate: finiteNumber(item.rate, 1) || 1
@@ -816,11 +943,54 @@
     const day = String(date.getDate()).padStart(2, "0");
     return `${year}-${month}-${day}`;
   }
+  function parseDate(value) {
+    const [year, month, day] = String(value).split("-").map(Number);
+    if (![year, month, day].every(Number.isFinite)) throw new Error("\u65E5\u671F\u65E0\u6548");
+    return { year, month, day };
+  }
+  function daysInMonth(year, month) {
+    return new Date(Date.UTC(year, month, 0)).getUTCDate();
+  }
+  function clampedDate(year, month, day) {
+    const normalized = new Date(Date.UTC(year, month - 1, 1));
+    const targetYear = normalized.getUTCFullYear();
+    const targetMonth = normalized.getUTCMonth() + 1;
+    return `${targetYear}-${String(targetMonth).padStart(2, "0")}-${String(Math.min(day, daysInMonth(targetYear, targetMonth))).padStart(2, "0")}`;
+  }
+  function creditStatementDateForPurchase(value, credit) {
+    const { year, month, day } = parseDate(value);
+    const billingDay = Number(credit?.billingDay);
+    if (!Number.isInteger(billingDay) || billingDay < 1 || billingDay > 31) throw new Error("\u8D26\u5355\u65E5\u65E0\u6548");
+    const currentBillingDay = Math.min(billingDay, daysInMonth(year, month));
+    const movesToNextMonth = day > currentBillingDay || day === currentBillingDay && credit.billingDayInNextCycle;
+    return movesToNextMonth ? clampedDate(year, month + 1, billingDay) : clampedDate(year, month, billingDay);
+  }
+  function creditRepaymentDate(statementDate, credit) {
+    const { year, month, day } = parseDate(statementDate);
+    if (credit?.repaymentType === "delay") {
+      const delay = Number(credit.repaymentDelayDays);
+      if (!Number.isInteger(delay) || delay < 0) throw new Error("\u8FD8\u6B3E\u95F4\u9694\u65E0\u6548");
+      const date = new Date(Date.UTC(year, month - 1, day));
+      date.setUTCDate(date.getUTCDate() + delay);
+      return date.toISOString().slice(0, 10);
+    }
+    const repaymentDay = Number(credit?.repaymentDay);
+    if (!Number.isInteger(repaymentDay) || repaymentDay < 1 || repaymentDay > 31) throw new Error("\u8FD8\u6B3E\u65E5\u65E0\u6548");
+    return repaymentDay > day ? clampedDate(year, month, repaymentDay) : clampedDate(year, month + 1, repaymentDay);
+  }
+  function creditInterestFreeDays(purchaseDate, credit) {
+    const statementDate = creditStatementDateForPurchase(purchaseDate, credit);
+    const repaymentDate = creditRepaymentDate(statementDate, credit);
+    const start = Date.parse(`${purchaseDate}T00:00:00Z`);
+    const end = Date.parse(`${repaymentDate}T00:00:00Z`);
+    return Math.round((end - start) / 864e5);
+  }
   function advanceRecurringDate(value, frequency) {
     const [year, month, day] = String(value).split("-").map(Number);
     if (![year, month, day].every(Number.isFinite)) throw new Error("\u5468\u671F\u65E5\u671F\u65E0\u6548");
     const date = new Date(year, month - 1, day);
-    if (frequency === "weekly") date.setDate(date.getDate() + 7);
+    if (frequency === "daily") date.setDate(date.getDate() + 1);
+    else if (frequency === "weekly") date.setDate(date.getDate() + 7);
     else if (frequency === "monthly") {
       const lastDay = new Date(year, month + 1, 0).getDate();
       date.setFullYear(year, month, Math.min(day, lastDay));
@@ -832,6 +1002,117 @@
     }
     return formatLocalDate(date);
   }
+  var SAVINGS_PLAN_PRESETS = {
+    daily365: {
+      name: "365\u5929\u5B58\u94B1\u8BA1\u5212",
+      frequency: "daily",
+      totalPeriods: 365,
+      startAmount: 1,
+      incrementAmount: 1
+    },
+    weekly52: {
+      name: "52\u5468\u5B58\u94B1\u8BA1\u5212",
+      frequency: "weekly",
+      totalPeriods: 52,
+      startAmount: 10,
+      incrementAmount: 10
+    },
+    monthlyFixed: {
+      name: "\u6BCF\u6708\u5B9A\u989D\u5B58\u94B1\u8BA1\u5212",
+      frequency: "monthly",
+      totalPeriods: 12,
+      startAmount: 1e3,
+      incrementAmount: 0
+    },
+    custom: {
+      name: "\u81EA\u5B9A\u4E49\u5B58\u94B1\u8BA1\u5212",
+      frequency: "monthly",
+      totalPeriods: 12,
+      startAmount: 500,
+      incrementAmount: 0
+    }
+  };
+  function savingsPlanPreset(template) {
+    const preset = SAVINGS_PLAN_PRESETS[template];
+    if (!preset) throw new Error("\u5B58\u94B1\u8BA1\u5212\u6A21\u677F\u65E0\u6548");
+    return { ...preset };
+  }
+  function savingsPlanDateAt(startDate, frequency, offset) {
+    const { year, month, day } = parseDate(startDate);
+    if (frequency === "monthly") return clampedDate(year, month + offset, day);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    date.setUTCDate(date.getUTCDate() + offset * (frequency === "weekly" ? 7 : 1));
+    return date.toISOString().slice(0, 10);
+  }
+  function savingsPlanAmount(plan, period) {
+    const number = Number(period);
+    const totalPeriods = Number(plan?.totalPeriods);
+    if (!Number.isInteger(number) || number < 1 || number > totalPeriods) throw new Error("\u5B58\u94B1\u8BA1\u5212\u671F\u6B21\u65E0\u6548");
+    return roundMoney(Number(plan.startAmount) + Number(plan.incrementAmount || 0) * (number - 1));
+  }
+  function validateSavingsPlan(input, state) {
+    const preset = savingsPlanPreset(input.template || "custom");
+    const fixedPreset = ["daily365", "weekly52"].includes(input.template);
+    const frequency = fixedPreset ? preset.frequency : input.frequency || preset.frequency;
+    const totalPeriods = Number(fixedPreset ? preset.totalPeriods : input.totalPeriods ?? preset.totalPeriods);
+    const startAmount = roundMoney(fixedPreset ? preset.startAmount : input.startAmount ?? preset.startAmount);
+    const incrementAmount = roundMoney(fixedPreset ? preset.incrementAmount : input.incrementAmount ?? preset.incrementAmount);
+    if (!["daily", "weekly", "monthly"].includes(frequency)) throw new Error("\u5B58\u94B1\u5468\u671F\u65E0\u6548");
+    if (!Number.isInteger(totalPeriods) || totalPeriods < 1 || totalPeriods > 1e3) throw new Error("\u5B58\u94B1\u671F\u6570\u5FC5\u987B\u4E3A 1 \u5230 1000");
+    if (startAmount <= 0) throw new Error("\u9996\u671F\u91D1\u989D\u5FC5\u987B\u5927\u4E8E 0");
+    if (incrementAmount < 0) throw new Error("\u9012\u589E\u91D1\u989D\u4E0D\u80FD\u5C0F\u4E8E 0");
+    if (!input.startDate || !/^\d{4}-\d{2}-\d{2}$/.test(input.startDate)) throw new Error("\u8BF7\u9009\u62E9\u6709\u6548\u5F00\u59CB\u65E5\u671F");
+    if (!state.books.some((item) => item.id === input.bookId && !item.hidden)) throw new Error("\u8D26\u672C\u4E0D\u5B58\u5728\u6216\u5DF2\u9690\u85CF");
+    const source = state.accounts.find((item) => item.id === input.sourceAccountId);
+    const target = state.accounts.find((item) => item.id === input.targetAccountId);
+    if (!accountAvailableInBook(source, input.bookId) || !accountAvailableInBook(target, input.bookId)) {
+      throw new Error("\u5B58\u94B1\u8D26\u6237\u4E0D\u53EF\u7528\u4E8E\u5F53\u524D\u8D26\u672C");
+    }
+    if (source.id === target.id) throw new Error("\u8F6C\u51FA\u8D26\u6237\u548C\u5B58\u6B3E\u8D26\u6237\u4E0D\u80FD\u76F8\u540C");
+    if (source.currencyCode !== target.currencyCode) throw new Error("\u5B58\u94B1\u8BA1\u5212\u6682\u53EA\u652F\u6301\u540C\u5E01\u79CD\u8D26\u6237");
+    const targetAmount = roundMoney(totalPeriods * (startAmount * 2 + (totalPeriods - 1) * incrementAmount) / 2);
+    return {
+      template: input.template || "custom",
+      bookId: input.bookId,
+      name: String(input.name || preset.name).trim() || preset.name,
+      sourceAccountId: source.id,
+      targetAccountId: target.id,
+      currencyCode: source.currencyCode,
+      startDate: input.startDate,
+      frequency,
+      totalPeriods,
+      startAmount,
+      incrementAmount,
+      targetAmount,
+      status: input.status === "paused" ? "paused" : "active"
+    };
+  }
+  function savingsPlanProgress(state, plan) {
+    const completed = /* @__PURE__ */ new Map();
+    state.transactions.filter((item) => !item.deletedAt && item.status !== "pending" && item.type === "transfer" && item.savingsPlanId === plan.id && Number.isInteger(Number(item.savingsPlanPeriod)) && Number(item.savingsPlanPeriod) >= 1 && Number(item.savingsPlanPeriod) <= Number(plan.totalPeriods)).forEach((item) => {
+      const period = Number(item.savingsPlanPeriod);
+      if (!completed.has(period)) completed.set(period, item);
+    });
+    let nextPeriod = null;
+    for (let period = 1; period <= Number(plan.totalPeriods); period += 1) {
+      if (!completed.has(period)) {
+        nextPeriod = period;
+        break;
+      }
+    }
+    const savedAmount = roundMoney([...completed.values()].reduce((sum, item) => sum + Number(item.amount || 0), 0));
+    const targetAmount = roundMoney(plan.targetAmount);
+    return {
+      completedPeriods: completed.size,
+      savedAmount,
+      targetAmount,
+      percentage: targetAmount > 0 ? Math.min(100, Math.round(savedAmount / targetAmount * 100)) : 0,
+      nextPeriod,
+      nextAmount: nextPeriod ? savingsPlanAmount(plan, nextPeriod) : 0,
+      nextDate: nextPeriod ? savingsPlanDateAt(plan.startDate, plan.frequency, nextPeriod - 1) : null,
+      complete: nextPeriod === null
+    };
+  }
   function installmentAmount(totalAmount, periods, paidPeriods) {
     const total = roundMoney(totalAmount);
     const count = Number(periods);
@@ -841,9 +1122,102 @@
     const regular = roundMoney(total / count);
     return paid === count - 1 ? roundMoney(total - regular * (count - 1)) : regular;
   }
+  function accountAvailableInBook(account, bookId) {
+    return Boolean(
+      account && !account.deletedAt && (!Array.isArray(account.bookIds) || account.bookIds.length === 0 || account.bookIds.includes(bookId))
+    );
+  }
+  function activeRefunds(state, transactionId = null) {
+    return (state.refunds || []).filter((item) => !item.deletedAt && (!transactionId || item.transactionId === transactionId));
+  }
+  function refundedAmount(state, transactionId) {
+    return roundMoney(activeRefunds(state, transactionId).reduce((total, item) => total + Number(item.amount || 0), 0));
+  }
+  function validateRefund(input, state) {
+    const transaction = state.transactions.find((item) => item.id === input.transactionId && !item.deletedAt);
+    if (!transaction) throw new Error("\u539F\u660E\u7EC6\u4E0D\u5B58\u5728");
+    if (!["expense", "income"].includes(transaction.type)) throw new Error("\u4EC5\u6536\u652F\u660E\u7EC6\u652F\u6301\u9000\u6B3E");
+    const amount = roundMoney(input.amount);
+    if (amount <= 0) throw new Error("\u9000\u6B3E\u91D1\u989D\u5FC5\u987B\u5927\u4E8E 0");
+    const editingRefund = input.refundId ? activeRefunds(state, transaction.id).find((item) => item.id === input.refundId) : null;
+    const existingAmount = roundMoney(refundedAmount(state, transaction.id) - Number(editingRefund?.amount || 0));
+    if (roundMoney(existingAmount + amount) > roundMoney(transaction.amount)) {
+      throw new Error("\u7D2F\u8BA1\u9000\u6B3E\u91D1\u989D\u4E0D\u80FD\u8D85\u8FC7\u539F\u660E\u7EC6\u91D1\u989D");
+    }
+    const account = state.accounts.find((item) => item.id === input.accountId);
+    if (!accountAvailableInBook(account, transaction.bookId)) throw new Error("\u9000\u6B3E\u8D26\u6237\u4E0D\u53EF\u7528\u4E8E\u5F53\u524D\u8D26\u672C");
+    const accountAmount = roundMoney(input.accountAmount ?? amount);
+    if (accountAmount <= 0) throw new Error("\u9000\u6B3E\u6298\u5408\u91D1\u989D\u5FC5\u987B\u5927\u4E8E 0");
+    const accountCurrencyCode = input.currencyCode || account.currencyCode || transaction.currencyCode;
+    const accountExchangeRate = Number(input.exchangeRate ?? state.currencies.find((item) => item.code === accountCurrencyCode)?.rate ?? 1);
+    if (!(accountExchangeRate > 0)) throw new Error("\u9000\u6B3E\u8D26\u6237\u6C47\u7387\u5FC5\u987B\u5927\u4E8E 0");
+    const result = {
+      ...input,
+      amount,
+      accountAmount,
+      currencyCode: accountCurrencyCode,
+      exchangeRate: accountExchangeRate
+    };
+    delete result.refundId;
+    return result;
+  }
+  function settledAmount(state, transactionId) {
+    return roundMoney((state.settlements || []).filter((item) => !item.deletedAt && item.sourceTransactionIds?.includes(transactionId)).reduce((total, item) => {
+      const fallback = item.sourceTransactionIds.length === 1 ? item.amount : 0;
+      return total + Number(item.allocations?.[transactionId] ?? fallback ?? 0);
+    }, 0));
+  }
+  function remainingSettlementAmount(state, transactionId) {
+    const transaction = state.transactions.find((item) => item.id === transactionId && !item.deletedAt);
+    if (!transaction || !["payable", "receivable"].includes(transaction.type)) return 0;
+    return roundMoney(Math.max(0, transaction.amount - settledAmount(state, transactionId)));
+  }
+  function validateSettlement(input, state) {
+    const sourceTransactionIds = [...new Set((input.sourceTransactionIds || []).filter(Boolean))];
+    if (!sourceTransactionIds.length) throw new Error("\u8BF7\u9009\u62E9\u5E94\u6536\u6216\u5E94\u4ED8\u660E\u7EC6");
+    const sources = sourceTransactionIds.map((id) => state.transactions.find((item) => item.id === id && !item.deletedAt));
+    if (sources.some((item) => !item || !["payable", "receivable"].includes(item.type))) {
+      throw new Error("\u7ED3\u7B97\u6765\u6E90\u65E0\u6548");
+    }
+    const type = sources[0].type;
+    if (sources.some((item) => item.type !== type)) throw new Error("\u5E94\u6536\u548C\u5E94\u4ED8\u4E0D\u80FD\u5408\u5E76\u7ED3\u7B97");
+    const bookId = sources[0].bookId;
+    if (sources.some((item) => item.bookId !== bookId)) throw new Error("\u4E0D\u540C\u8D26\u672C\u4E0D\u80FD\u5408\u5E76\u7ED3\u7B97");
+    const currencyCode = sources[0].currencyCode;
+    const exchangeRate = Number(sources[0].exchangeRate || 1);
+    if (sources.some((item) => item.currencyCode !== currencyCode || Number(item.exchangeRate || 1) !== exchangeRate)) {
+      throw new Error("\u4E0D\u540C\u5E01\u79CD\u6216\u6C47\u7387\u7684\u660E\u7EC6\u4E0D\u80FD\u5408\u5E76\u7ED3\u7B97");
+    }
+    const amount = roundMoney(input.amount);
+    const remaining = roundMoney(sourceTransactionIds.reduce((total, id) => total + remainingSettlementAmount(state, id), 0));
+    if (amount <= 0) throw new Error("\u7ED3\u7B97\u91D1\u989D\u5FC5\u987B\u5927\u4E8E 0");
+    if (amount > remaining) throw new Error("\u7ED3\u7B97\u91D1\u989D\u4E0D\u80FD\u8D85\u8FC7\u5F85\u7ED3\u7B97\u91D1\u989D");
+    const account = state.accounts.find((item) => item.id === input.accountId);
+    if (!accountAvailableInBook(account, bookId)) throw new Error("\u7ED3\u7B97\u8D26\u6237\u4E0D\u53EF\u7528\u4E8E\u5F53\u524D\u8D26\u672C");
+    let amountLeft = amount;
+    const allocations = {};
+    sourceTransactionIds.forEach((id) => {
+      const allocation = roundMoney(Math.min(amountLeft, remainingSettlementAmount(state, id)));
+      if (allocation > 0) allocations[id] = allocation;
+      amountLeft = roundMoney(amountLeft - allocation);
+    });
+    return {
+      ...input,
+      sourceTransactionIds,
+      bookId,
+      currencyCode,
+      exchangeRate,
+      amount,
+      allocations,
+      transactionType: type === "payable" ? "expense" : "income"
+    };
+  }
   function calculateAccountBalances(state, bookId = null) {
     const currencyRates = Object.fromEntries((state.currencies || []).map((currency) => [currency.code, currency.rate || 1]));
-    const balances = Object.fromEntries(state.accounts.filter((account) => !account.deletedAt).map((account) => [account.id, roundMoney(account.initialBalance * (currencyRates[account.currencyCode] || 1))]));
+    const balances = Object.fromEntries(state.accounts.filter((account) => !account.deletedAt).map((account) => {
+      const initial = roundMoney(account.initialBalance * (currencyRates[account.currencyCode] || 1));
+      return [account.id, account.type === "credit" ? -initial : initial];
+    }));
     const transactions = state.transactions.filter((item) => !item.deletedAt && item.status !== "pending" && (!bookId || item.bookId === bookId));
     transactions.forEach((transaction) => {
       const amount = roundMoney(transaction.amount * (transaction.exchangeRate || 1));
@@ -861,7 +1235,193 @@
         }
       }
     });
+    activeRefunds(state).forEach((refund) => {
+      const transaction = state.transactions.find((item) => item.id === refund.transactionId && !item.deletedAt);
+      if (!transaction || bookId && transaction.bookId !== bookId || !(refund.accountId in balances)) return;
+      const accountAmount = roundMoney(refund.accountAmount * (refund.exchangeRate || 1));
+      if (transaction.type === "expense") {
+        balances[refund.accountId] = roundMoney(balances[refund.accountId] + accountAmount);
+      }
+      if (transaction.type === "income") {
+        balances[refund.accountId] = roundMoney(balances[refund.accountId] - accountAmount);
+      }
+    });
     return balances;
+  }
+  function calculateCreditAvailableLimit(state, accountId) {
+    const account = state.accounts.find((item) => item.id === accountId && item.type === "credit" && !item.deletedAt);
+    if (!account) throw new Error("\u4FE1\u7528\u8D26\u6237\u4E0D\u5B58\u5728");
+    const rootId = account.credit?.sharedLimitAccountId || account.id;
+    const root = state.accounts.find((item) => item.id === rootId && item.type === "credit" && !item.deletedAt);
+    if (!root) throw new Error("\u5171\u4EAB\u989D\u5EA6\u4E3B\u8D26\u6237\u4E0D\u5B58\u5728");
+    const group = state.accounts.filter((item) => !item.deletedAt && item.type === "credit" && (item.id === root.id || item.credit?.sharedLimitAccountId === root.id));
+    if (group.some((item) => item.currencyCode !== root.currencyCode)) throw new Error("\u5171\u4EAB\u989D\u5EA6\u8D26\u6237\u5E01\u79CD\u5FC5\u987B\u4E00\u81F4");
+    const rate = state.currencies.find((item) => item.code === root.currencyCode)?.rate || 1;
+    const balances = calculateAccountBalances(state);
+    const debt = roundMoney(group.reduce((total, item) => total + Math.max(0, -(balances[item.id] || 0) / rate), 0));
+    const limit = roundMoney(root.credit?.limit || 0);
+    return {
+      rootAccountId: root.id,
+      limit,
+      debt,
+      available: roundMoney(limit - debt)
+    };
+  }
+  function amountInAccountCurrency(state, transaction, account) {
+    const accountRate = state.currencies.find((item) => item.code === account.currencyCode)?.rate || 1;
+    return roundMoney(transaction.amount * (transaction.exchangeRate || 1) / accountRate);
+  }
+  function calculateCreditStatementSummary(state, accountId, asOfDate = formatLocalDate(/* @__PURE__ */ new Date())) {
+    const account = state.accounts.find((item) => item.id === accountId && item.type === "credit" && !item.deletedAt);
+    if (!account) throw new Error("\u4FE1\u7528\u8D26\u6237\u4E0D\u5B58\u5728");
+    if (!account.credit?.billingDay) throw new Error("\u8BF7\u5148\u8BBE\u7F6E\u8D26\u5355\u65E5");
+    const statementsByDate = /* @__PURE__ */ new Map();
+    const statementFor = (date) => {
+      if (!statementsByDate.has(date)) {
+        statementsByDate.set(date, {
+          statementDate: date,
+          repaymentDate: creditRepaymentDate(date, account.credit),
+          grossAmount: 0,
+          sameCycleRefund: 0,
+          statementAmount: 0,
+          incomeCredit: 0,
+          overpaymentApplied: 0,
+          issuedDue: 0,
+          repaymentApplied: 0,
+          lateRefundApplied: 0,
+          remainingDue: 0
+        });
+      }
+      return statementsByDate.get(date);
+    };
+    const transactions = state.transactions.filter((item) => !item.deletedAt && item.status !== "pending" && item.date <= asOfDate);
+    transactions.forEach((transaction) => {
+      const isCharge = transaction.accountId === accountId && (transaction.type === "expense" || transaction.type === "transfer");
+      if (!isCharge) return;
+      const statement = statementFor(creditStatementDateForPurchase(transaction.date, account.credit));
+      const amount = amountInAccountCurrency(state, transaction, account);
+      statement.grossAmount = roundMoney(statement.grossAmount + amount);
+    });
+    const creditEvents = [];
+    transactions.filter((item) => item.accountId === accountId && item.type === "income").forEach((transaction) => {
+      creditEvents.push({
+        date: transaction.date,
+        amount: amountInAccountCurrency(state, transaction, account),
+        kind: "income"
+      });
+    });
+    activeRefunds(state).filter((refund) => refund.date <= asOfDate && refund.accountId === accountId).forEach((refund) => {
+      const source = transactions.find((item) => item.id === refund.transactionId && item.type === "expense" && item.accountId === accountId);
+      if (!source) return;
+      const sourceStatementDate = creditStatementDateForPurchase(source.date, account.credit);
+      const refundStatementDate = creditStatementDateForPurchase(refund.date, account.credit);
+      const amount = roundMoney(refund.accountAmount);
+      if (sourceStatementDate === refundStatementDate) {
+        const statement = statementFor(sourceStatementDate);
+        statement.sameCycleRefund = roundMoney(statement.sameCycleRefund + amount);
+      } else {
+        creditEvents.push({ date: refund.date, amount, kind: "late-refund" });
+      }
+    });
+    transactions.filter((item) => item.type === "transfer" && item.targetAccountId === accountId).forEach((transaction) => {
+      creditEvents.push({
+        date: transaction.date,
+        amount: amountInAccountCurrency(state, transaction, account),
+        kind: "repayment"
+      });
+    });
+    const statements = [...statementsByDate.values()].sort((a, b) => a.statementDate.localeCompare(b.statementDate));
+    statements.forEach((statement) => {
+      statement.statementAmount = roundMoney(Math.max(0, statement.grossAmount - statement.sameCycleRefund));
+    });
+    const events = [
+      ...statements.filter((item) => item.statementDate <= asOfDate).map((statement) => ({
+        date: statement.statementDate,
+        kind: "statement",
+        statement,
+        priority: 0
+      })),
+      ...creditEvents.map((event) => ({ ...event, priority: 1 }))
+    ].sort((a, b) => a.date.localeCompare(b.date) || a.priority - b.priority);
+    let overpayment = 0;
+    events.forEach((event) => {
+      if (event.kind === "statement") {
+        const statement = event.statement;
+        const dueBeforeOverpayment = statement.statementAmount;
+        statement.overpaymentApplied = roundMoney(Math.min(overpayment, dueBeforeOverpayment));
+        overpayment = roundMoney(overpayment - statement.overpaymentApplied);
+        statement.issuedDue = roundMoney(dueBeforeOverpayment - statement.overpaymentApplied);
+        statement.remainingDue = statement.issuedDue;
+        return;
+      }
+      let remainingCredit = event.amount;
+      statements.filter((item) => item.statementDate <= event.date && item.remainingDue > 0).forEach((statement) => {
+        if (remainingCredit <= 0) return;
+        const applied = roundMoney(Math.min(remainingCredit, statement.remainingDue));
+        statement.remainingDue = roundMoney(statement.remainingDue - applied);
+        if (event.kind === "repayment") statement.repaymentApplied = roundMoney(statement.repaymentApplied + applied);
+        if (event.kind === "late-refund") statement.lateRefundApplied = roundMoney(statement.lateRefundApplied + applied);
+        if (event.kind === "income") statement.incomeCredit = roundMoney(statement.incomeCredit + applied);
+        remainingCredit = roundMoney(remainingCredit - applied);
+      });
+      overpayment = roundMoney(overpayment + remainingCredit);
+    });
+    const accountRate = state.currencies.find((item) => item.code === account.currencyCode)?.rate || 1;
+    const balance = calculateAccountBalances(state)[accountId] || 0;
+    const issued = statements.filter((item) => item.statementDate <= asOfDate);
+    const unissued = statements.filter((item) => item.statementDate > asOfDate);
+    const currentDue = roundMoney(issued.reduce((total, item) => total + item.remainingDue, 0));
+    const unbilledAmount = roundMoney(unissued.reduce((total, item) => total + item.statementAmount, 0));
+    const totalDebt = roundMoney(Math.max(0, -balance / accountRate));
+    return {
+      accountId,
+      asOfDate,
+      statements,
+      currentDue,
+      unbilledAmount,
+      overpayment,
+      totalDebt,
+      untrackedDebt: roundMoney(Math.max(0, totalDebt - currentDue - unbilledAmount))
+    };
+  }
+  function validateReimbursement(input, state) {
+    const sourceTransactionIds = [...new Set((input.sourceTransactionIds || []).filter(Boolean))];
+    if (!sourceTransactionIds.length) throw new Error("\u8BF7\u9009\u62E9\u5F85\u62A5\u9500\u660E\u7EC6");
+    const sources = sourceTransactionIds.map((id) => state.transactions.find((item) => item.id === id && !item.deletedAt));
+    if (sources.some((item) => !item || item.type !== "expense" || item.reimburseStatus !== "pending" || item.reimbursementId)) {
+      throw new Error("\u5F85\u62A5\u9500\u660E\u7EC6\u65E0\u6548\u6216\u5DF2\u7ECF\u62A5\u9500");
+    }
+    const bookId = sources[0].bookId;
+    if (sources.some((item) => item.bookId !== bookId)) throw new Error("\u4E0D\u540C\u8D26\u672C\u4E0D\u80FD\u5408\u5E76\u62A5\u9500");
+    const currencyCode = sources[0].currencyCode;
+    const exchangeRate = Number(sources[0].exchangeRate || 1);
+    if (sources.some((item) => item.currencyCode !== currencyCode || Number(item.exchangeRate || 1) !== exchangeRate)) {
+      throw new Error("\u4E0D\u540C\u5E01\u79CD\u6216\u6C47\u7387\u7684\u660E\u7EC6\u4E0D\u80FD\u5408\u5E76\u62A5\u9500");
+    }
+    const account = state.accounts.find((item) => item.id === input.accountId);
+    if (!accountAvailableInBook(account, bookId)) throw new Error("\u62A5\u9500\u5230\u8D26\u8D26\u6237\u4E0D\u53EF\u7528\u4E8E\u5F53\u524D\u8D26\u672C");
+    const expectedAmount = roundMoney(sources.reduce((total, item) => total + item.amount, 0));
+    const actualAmount = roundMoney(input.actualAmount);
+    if (actualAmount <= 0) throw new Error("\u5B9E\u9645\u5230\u8D26\u91D1\u989D\u5FC5\u987B\u5927\u4E8E 0");
+    const difference = roundMoney(actualAmount - expectedAmount);
+    return {
+      ...input,
+      sourceTransactionIds,
+      bookId,
+      expectedAmount,
+      actualAmount,
+      receiptAmount: expectedAmount,
+      differenceAmount: Math.abs(difference),
+      differenceType: difference > 0 ? "income" : difference < 0 ? "expense" : null,
+      allocations: Object.fromEntries(sources.map((item) => [item.id, roundMoney(item.amount)])),
+      currencyCode,
+      exchangeRate
+    };
+  }
+  function transactionIncludedInOrdinaryStats(transaction) {
+    if (transaction.type === "expense" && ["pending", "reimbursed"].includes(transaction.reimburseStatus)) return false;
+    if (transaction.generatedBy?.kind === "reimbursement") return false;
+    return true;
   }
   function validateTransaction(input, state) {
     const amount = roundMoney(input.amount);
@@ -869,10 +1429,13 @@
     const exchangeRate = Number(input.exchangeRate ?? 1);
     if (!(exchangeRate > 0)) throw new Error("\u6C47\u7387\u5FC5\u987B\u5927\u4E8E 0");
     if (!state.books.some((item) => item.id === input.bookId && !item.hidden)) throw new Error("\u8D26\u672C\u4E0D\u5B58\u5728\u6216\u5DF2\u9690\u85CF");
-    if (!state.accounts.some((item) => item.id === input.accountId && !item.deletedAt)) throw new Error("\u8D26\u6237\u4E0D\u5B58\u5728");
+    const account = state.accounts.find((item) => item.id === input.accountId);
+    if (!accountAvailableInBook(account, input.bookId)) throw new Error("\u8D26\u6237\u4E0D\u5B58\u5728\u6216\u4E0D\u53EF\u7528\u4E8E\u5F53\u524D\u8D26\u672C");
     if (input.type === "transfer") {
       if (!input.targetAccountId) throw new Error("\u8BF7\u9009\u62E9\u8F6C\u5165\u8D26\u6237");
       if (input.targetAccountId === input.accountId) throw new Error("\u8F6C\u51FA\u8D26\u6237\u548C\u8F6C\u5165\u8D26\u6237\u4E0D\u80FD\u76F8\u540C");
+      const targetAccount = state.accounts.find((item) => item.id === input.targetAccountId);
+      if (!accountAvailableInBook(targetAccount, input.bookId)) throw new Error("\u8F6C\u5165\u8D26\u6237\u4E0D\u53EF\u7528\u4E8E\u5F53\u524D\u8D26\u672C");
     }
     if (!input.date || !/^\d{4}-\d{2}-\d{2}$/.test(input.date)) throw new Error("\u8BF7\u9009\u62E9\u6709\u6548\u65E5\u671F");
     return { ...input, amount, exchangeRate };
@@ -1038,11 +1601,20 @@
 
   // src/auto-booking.mjs
   init_dist();
-  var emptyStatus = { notificationAccess: false, accessibilityAccess: false, smsPermission: false };
+  var WEB_QUEUE_KEY = "zhiji.auto-booking.web.v1";
+  function readWebQueue() {
+    try {
+      const value = JSON.parse(localStorage.getItem(WEB_QUEUE_KEY) || "[]");
+      return Array.isArray(value) ? value : [];
+    } catch {
+      return [];
+    }
+  }
+  var emptyStatus = { notificationAccess: false, accessibilityAccess: false, smsPermission: false, pendingCount: 0 };
   var AutoBooking = registerPlugin("AutoBooking", {
     web: () => Promise.resolve({
       async getStatus() {
-        return emptyStatus;
+        return { ...emptyStatus, pendingCount: readWebQueue().length };
       },
       async openNotificationAccess() {
         throw new Error("\u8BF7\u5728 Android App \u4E2D\u5F00\u542F\u901A\u77E5\u81EA\u52A8\u8BB0\u8D26");
@@ -1051,7 +1623,12 @@
         throw new Error("\u8BF7\u5728 Android App \u4E2D\u5F00\u542F\u65E0\u969C\u788D\u81EA\u52A8\u8BB0\u8D26");
       },
       async drainNotifications() {
-        return { items: [] };
+        return { items: readWebQueue() };
+      },
+      async acknowledgeCandidate({ id }) {
+        const next = readWebQueue().filter((item) => item.id !== id);
+        localStorage.setItem(WEB_QUEUE_KEY, JSON.stringify(next));
+        return { removed: true };
       },
       async readSms() {
         return { items: [] };
@@ -1062,6 +1639,7 @@
   var openNotificationAccess = () => AutoBooking.openNotificationAccess();
   var openAccessibilityAccess = () => AutoBooking.openAccessibilityAccess();
   var loadNotificationCandidates = () => AutoBooking.drainNotifications();
+  var acknowledgeAutoBookingCandidate = (id, status) => AutoBooking.acknowledgeCandidate({ id, status });
   var loadSmsCandidates = () => AutoBooking.readSms();
 
   // src/ledger-widget.mjs
@@ -1137,9 +1715,12 @@
     let syncInProgress = false;
     let backgroundAt = null;
     let autoBookingCandidates = [];
+    let currentAutoBookingCandidateId = null;
+    const promptedAutoBookingCandidateIds = /* @__PURE__ */ new Set();
     let transactionPhotos = [];
     let transactionLocation = null;
     let activeViewName = "home";
+    let editingRefundId = null;
     function makeId(prefix) {
       if (crypto.randomUUID) return `${prefix}-${crypto.randomUUID()}`;
       return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -1178,8 +1759,8 @@
     }
     function syncLedgerWidget() {
       const monthTransactions = currentTransactions().filter((item) => monthKey(item.date) === monthKey());
-      const income = monthTransactions.filter((item) => item.type === "income").reduce((sum, item) => sum + baseAmount(item), 0);
-      const expense = monthTransactions.filter((item) => item.type === "expense").reduce((sum, item) => sum + baseAmount(item), 0);
+      const income = monthTransactions.filter((item) => item.type === "income").reduce((sum, item) => sum + netBaseAmount(item), 0);
+      const expense = monthTransactions.filter((item) => item.type === "expense").reduce((sum, item) => sum + netBaseAmount(item), 0);
       const balance = Object.values(accountBalances()).reduce((sum, value) => sum + value, 0);
       updateLedgerWidget({
         bookName: activeBook().name,
@@ -1221,8 +1802,20 @@
       const prefix = amount > 0 ? "+" : amount < 0 ? "-" : "";
       return `${prefix}\xA5${absolute}`;
     }
+    function formatPlanMoney(value, currencyCode) {
+      const currency = currencyByCode(currencyCode);
+      return `${currency.symbol || currency.code}${Number(value || 0).toLocaleString("zh-CN", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      })}`;
+    }
     function baseAmount(transaction) {
       return roundMoney(transaction.amount * (transaction.exchangeRate || 1));
+    }
+    function netBaseAmount(transaction) {
+      if (!transactionIncludedInOrdinaryStats(transaction)) return 0;
+      if (!["expense", "income"].includes(transaction.type)) return baseAmount(transaction);
+      return roundMoney(baseAmount(transaction) - refundedAmount(state, transaction.id) * (transaction.exchangeRate || 1));
     }
     function currencyByCode(code) {
       return state.currencies.find((item) => item.code === code) || state.currencies[0];
@@ -1252,6 +1845,9 @@
     function currentTransactions() {
       return state.transactions.filter((item) => item.bookId === state.activeBookId && !item.deletedAt);
     }
+    function availableAccounts(bookId = state.activeBookId, options = {}) {
+      return state.accounts.filter((item) => accountAvailableInBook(item, bookId) && (options.includeHidden || !item.hidden));
+    }
     function currentMembers() {
       return state.members.filter((item) => (!item.bookId || item.bookId === state.activeBookId) && !item.deletedAt);
     }
@@ -1273,6 +1869,25 @@
     }
     function accountBalances() {
       return calculateAccountBalances(state);
+    }
+    function creditSummary(account, balances) {
+      if (account.type !== "credit") return null;
+      try {
+        const rate = currencyByCode(account.currencyCode).rate || 1;
+        const limit = calculateCreditAvailableLimit(state, account.id);
+        const statement = account.credit?.billingDay ? calculateCreditStatementSummary(state, account.id, localDate()) : null;
+        const days = account.credit?.billingDay && (account.credit?.repaymentDay || account.credit?.repaymentType === "delay") ? creditInterestFreeDays(localDate(), account.credit) : null;
+        return {
+          debt: roundMoney(Math.max(0, -(balances[account.id] || 0) / rate)),
+          available: limit.available,
+          currentDue: statement?.currentDue || 0,
+          unbilledAmount: statement?.unbilledAmount || 0,
+          overpayment: statement?.overpayment || 0,
+          days
+        };
+      } catch {
+        return null;
+      }
     }
     function sortedTransactions(transactions = state.transactions) {
       return [...transactions].sort((a, b) => {
@@ -1315,7 +1930,8 @@
       const tags = currentTags();
       const merchants = currentMerchants();
       const categoryOptions = categories.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
-      const accountOptions = state.accounts.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
+      const accounts = availableAccounts();
+      const accountOptions = accounts.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
       [elements.transactionCategory, elements.parsedCategory].forEach((select) => {
         const current = select.value;
         select.innerHTML = categoryOptions;
@@ -1329,7 +1945,7 @@
       ].forEach((select) => {
         const current = select.value;
         select.innerHTML = accountOptions;
-        if (state.accounts.some((item) => item.id === current)) select.value = current;
+        if (accounts.some((item) => item.id === current)) select.value = current;
       });
       const books = state.books.filter((item) => !item.hidden);
       elements.activeBookSelect.innerHTML = books.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
@@ -1348,6 +1964,17 @@
       const selectedAccountCurrency = elements.newAccountCurrency.value || state.baseCurrency;
       elements.newAccountCurrency.innerHTML = state.currencies.map((item) => `<option value="${escapeHtml(item.code)}">${escapeHtml(item.code)} \xB7 ${escapeHtml(item.name)}</option>`).join("");
       elements.newAccountCurrency.value = state.currencies.some((item) => item.code === selectedAccountCurrency) ? selectedAccountCurrency : state.baseCurrency;
+      const selectedSharedAccount = elements.newAccountSharedLimit.value;
+      const sharedAccounts = state.accounts.filter((item) => !item.deletedAt && item.type === "credit" && item.currencyCode === elements.newAccountCurrency.value);
+      elements.newAccountSharedLimit.innerHTML = '<option value="">\u72EC\u7ACB\u989D\u5EA6</option>' + sharedAccounts.map((item) => `<option value="${escapeHtml(item.id)}">\u4E0E ${escapeHtml(item.name)} \u5171\u4EAB</option>`).join("");
+      if (sharedAccounts.some((item) => item.id === selectedSharedAccount)) elements.newAccountSharedLimit.value = selectedSharedAccount;
+      const selectedAccountBooks = new Set(
+        [...elements.newAccountBooks.querySelectorAll("input:checked")].map((item) => item.value)
+      );
+      elements.newAccountBooks.innerHTML = books.map((book) => {
+        const checked = selectedAccountBooks.size ? selectedAccountBooks.has(book.id) : book.id === state.activeBookId;
+        return `<label class="choice-item"><input type="checkbox" value="${escapeHtml(book.id)}"${checked ? " checked" : ""} /><span>${escapeHtml(book.name)}</span></label>`;
+      }).join("");
       const selectedSearchType = elements.searchType.value;
       elements.searchType.innerHTML = '<option value="">\u5168\u90E8\u7C7B\u578B</option>' + Object.entries(TRANSACTION_TYPE_LABELS).map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
       elements.searchType.value = selectedSearchType;
@@ -1364,20 +1991,25 @@
         select.innerHTML = accountOptions;
         if (state.accounts.some((item) => item.id === current)) select.value = current;
       });
+      [elements.savingsPlanSource, elements.savingsPlanTarget].forEach((select) => {
+        const current = select.value;
+        select.innerHTML = accountOptions;
+        if (accounts.some((item) => item.id === current)) select.value = current;
+      });
     }
     function renderHome() {
       const currentMonth = monthKey();
       const monthTransactions = currentTransactions().filter((item) => monthKey(item.date) === currentMonth);
       const incomeTransactions = monthTransactions.filter((item) => item.type === "income");
       const expenseTransactions = monthTransactions.filter((item) => item.type === "expense");
-      const income = incomeTransactions.reduce((sum, item) => sum + baseAmount(item), 0);
-      const expense = expenseTransactions.reduce((sum, item) => sum + baseAmount(item), 0);
+      const income = incomeTransactions.reduce((sum, item) => sum + netBaseAmount(item), 0);
+      const expense = expenseTransactions.reduce((sum, item) => sum + netBaseAmount(item), 0);
       const balances = accountBalances();
       const totalBalance = Object.values(balances).reduce((sum, value) => sum + value, 0);
       const budget = activeBook().monthlyBudget;
       const budgetPercent = budget > 0 ? Math.round(expense / budget * 100) : 0;
       elements.totalBalance.textContent = totalBalance < 0 ? formatMoney(totalBalance, true) : formatMoney(totalBalance);
-      elements.accountCount.textContent = `${state.accounts.length} \u4E2A\u8D26\u6237`;
+      elements.accountCount.textContent = `${availableAccounts().length} \u4E2A\u8D26\u6237`;
       elements.monthIncome.textContent = formatMoney(income);
       elements.incomeCount.textContent = `${incomeTransactions.length} \u7B14\u6536\u5165`;
       elements.monthExpense.textContent = formatMoney(expense);
@@ -1396,7 +2028,7 @@
       const daily = Array.from({ length: days }, () => 0);
       expenseTransactions.forEach((item) => {
         const day = Number(item.date.slice(8, 10));
-        if (day >= 1 && day <= days) daily[day - 1] += baseAmount(item);
+        if (day >= 1 && day <= days) daily[day - 1] += netBaseAmount(item);
       });
       const max = Math.max(...daily, 1);
       elements.dailyChart.innerHTML = daily.map((value, index) => {
@@ -1424,6 +2056,8 @@
         const note = item.note || category.name;
         const amountText = ["transfer", "payable", "receivable"].includes(item.type) ? formatMoney(convertedAmount) : formatMoney(amountValue, true);
         const statusText = item.status === "pending" ? " \xB7 \u5F85\u5904\u7406" : "";
+        const refundAmount = refundedAmount(state, item.id);
+        const refundText = refundAmount > 0 ? ` \xB7 \u5DF2\u9000\u6B3E ${formatMoney(refundAmount * (item.exchangeRate || 1))}` : "";
         const currency = currencyByCode(item.currencyCode);
         const originalText = item.currencyCode !== state.baseCurrency ? ` \xB7 ${escapeHtml(currency.symbol)}${item.amount}` : "";
         const memberNames = (item.memberShares || []).map((share) => state.members.find((member) => member.id === share.memberId)?.name).filter(Boolean);
@@ -1432,10 +2066,12 @@
         return `
         <article class="transaction-item" data-id="${escapeHtml(item.id)}">
           <span class="category-mark" style="background:${escapeHtml(category.color)}">${escapeHtml(category.name.slice(0, 1))}</span>
-          <div class="transaction-main"><strong>${escapeHtml(note)}</strong><small>${escapeHtml(category.name)} \xB7 ${typeText}${statusText}${originalText}${dimensionText ? ` \xB7 ${escapeHtml(dimensionText)}` : ""}</small></div>
+          <div class="transaction-main"><strong>${escapeHtml(note)}</strong><small>${escapeHtml(category.name)} \xB7 ${typeText}${statusText}${refundText}${originalText}${dimensionText ? ` \xB7 ${escapeHtml(dimensionText)}` : ""}</small></div>
           <div class="transaction-meta"><strong>${escapeHtml(accountText)}</strong><small>${formatShortDate(item.date)}</small></div>
           <span class="transaction-amount ${amountClass}">${amountText}</span>
           <div class="transaction-actions">
+            ${["expense", "income"].includes(item.type) && refundAmount < item.amount ? '<button class="row-action" type="button" data-action="refund" title="\u9000\u6B3E" aria-label="\u9000\u6B3E">\u9000</button>' : ""}
+            ${["payable", "receivable"].includes(item.type) && remainingSettlementAmount(state, item.id) > 0 ? '<button class="row-action" type="button" data-action="settle" title="\u7ED3\u7B97" aria-label="\u7ED3\u7B97">\u7ED3</button>' : ""}
             <button class="row-action edit" type="button" data-action="edit" title="\u7F16\u8F91" aria-label="\u7F16\u8F91">\u270E</button>
             <button class="row-action delete" type="button" data-action="delete" title="\u5220\u9664" aria-label="\u5220\u9664">\xD7</button>
           </div>
@@ -1446,16 +2082,16 @@
       const selectedMonth = elements.statsMonth.value || monthKey();
       if (!elements.statsMonth.value) elements.statsMonth.value = selectedMonth;
       const transactions = currentTransactions().filter((item) => monthKey(item.date) === selectedMonth);
-      const income = transactions.filter((item) => item.type === "income").reduce((sum, item) => sum + baseAmount(item), 0);
+      const income = transactions.filter((item) => item.type === "income").reduce((sum, item) => sum + netBaseAmount(item), 0);
       const expenseTransactions = transactions.filter((item) => item.type === "expense");
-      const expense = expenseTransactions.reduce((sum, item) => sum + baseAmount(item), 0);
+      const expense = expenseTransactions.reduce((sum, item) => sum + netBaseAmount(item), 0);
       elements.statsIncome.textContent = formatMoney(income);
       elements.statsExpense.textContent = formatMoney(expense);
       elements.statsNet.textContent = formatMoney(income - expense, true);
       elements.statsNet.className = income - expense >= 0 ? "income-text" : "expense-text";
       const categoryTotals = /* @__PURE__ */ new Map();
       expenseTransactions.forEach((item) => {
-        categoryTotals.set(item.categoryId, (categoryTotals.get(item.categoryId) || 0) + baseAmount(item));
+        categoryTotals.set(item.categoryId, (categoryTotals.get(item.categoryId) || 0) + netBaseAmount(item));
       });
       const categoryRows = [...categoryTotals.entries()].sort((a, b) => b[1] - a[1]);
       elements.categoryStats.innerHTML = categoryRows.length ? categoryRows.map(([id, amount]) => {
@@ -1485,13 +2121,31 @@
       const categories = currentCategories();
       elements.monthlyBudget.value = activeBook().monthlyBudget;
       elements.categoryTotal.textContent = `${categories.length} \u4E2A`;
-      elements.accountTotal.textContent = `${state.accounts.length} \u4E2A`;
+      const managedAccounts = state.accounts.filter((item) => !item.deletedAt);
+      elements.accountTotal.textContent = `${managedAccounts.length} \u4E2A`;
       elements.currencyTotal.textContent = `${state.currencies.length} \u4E2A`;
       elements.appLockStatus.textContent = state.settings.appLock ? "\u5DF2\u5F00\u542F" : "\u672A\u5F00\u542F";
       elements.lockTimeout.value = String(state.settings.appLock?.timeoutMinutes ?? 5);
       elements.categoryList.innerHTML = categories.map((item) => `<span class="tag-item"><i class="color-dot" style="background:${escapeHtml(item.color)}"></i>${escapeHtml(item.name)}<button type="button" data-category-id="${escapeHtml(item.id)}" data-category-action="rename" title="\u91CD\u547D\u540D\u5206\u7C7B" aria-label="\u91CD\u547D\u540D\u5206\u7C7B">\u270E</button><button type="button" data-category-id="${escapeHtml(item.id)}" data-category-action="delete" title="\u5220\u9664\u5206\u7C7B" aria-label="\u5220\u9664\u5206\u7C7B">\xD7</button></span>`).join("");
       const balances = accountBalances();
-      elements.accountList.innerHTML = state.accounts.map((item) => `<div class="account-manage-item"><span>${escapeHtml(item.name)} \xB7 ${escapeHtml(ACCOUNT_TYPE_LABELS[item.type] || "\u8D26\u6237")}</span><strong>${formatMoney(balances[item.id] || 0, true)}</strong><button type="button" data-account-id="${escapeHtml(item.id)}" data-account-action="rename" title="\u91CD\u547D\u540D\u8D26\u6237" aria-label="\u91CD\u547D\u540D\u8D26\u6237">\u270E</button><button type="button" data-account-id="${escapeHtml(item.id)}" data-account-action="delete" title="\u5220\u9664\u8D26\u6237" aria-label="\u5220\u9664\u8D26\u6237">\xD7</button></div>`).join("");
+      elements.accountList.innerHTML = managedAccounts.map((item) => {
+        const credit = creditSummary(item, balances);
+        const balanceText = credit ? `\u6B20\u6B3E ${formatMoney(credit.debt)} \xB7 \u53EF\u7528 ${formatMoney(credit.available)}` : formatMoney(balances[item.id] || 0, true);
+        const creditText = credit?.days == null ? "" : ` \xB7 \u4ECA\u65E5\u9884\u8BA1\u514D\u606F ${credit.days} \u5929`;
+        const statementText = credit ? ` \xB7 \u672C\u671F\u5E94\u8FD8 ${formatMoney(credit.currentDue)} \xB7 \u5F85\u51FA\u8D26 ${formatMoney(credit.unbilledAmount)}` : "";
+        return `<div class="account-manage-item${item.hidden ? " is-muted" : ""}">
+        <span>${escapeHtml(item.name)} \xB7 ${escapeHtml(ACCOUNT_TYPE_LABELS[item.type] || "\u8D26\u6237")}<small>${escapeHtml((item.bookIds || []).map((id) => state.books.find((book) => book.id === id)?.name).filter(Boolean).join("\u3001") || "\u5168\u90E8\u8D26\u672C")}</small></span>
+        <strong>${balanceText}${statementText}${creditText}</strong>
+        <div class="account-manage-actions">
+          ${credit ? `<button type="button" data-account-id="${escapeHtml(item.id)}" data-account-action="statement" title="\u67E5\u770B\u4FE1\u7528\u8D26\u5355">\u8D26\u5355</button>` : ""}
+          <button type="button" data-account-id="${escapeHtml(item.id)}" data-account-action="balance" title="\u8C03\u6574\u4F59\u989D">\u8C03\u4F59\u989D</button>
+          <button type="button" data-account-id="${escapeHtml(item.id)}" data-account-action="reconcile" title="\u5BF9\u8D26">\u5BF9\u8D26</button>
+          <button type="button" data-account-id="${escapeHtml(item.id)}" data-account-action="toggle-hidden">${item.hidden ? "\u663E\u793A" : "\u9690\u85CF"}</button>
+          <button type="button" data-account-id="${escapeHtml(item.id)}" data-account-action="rename" title="\u91CD\u547D\u540D\u8D26\u6237" aria-label="\u91CD\u547D\u540D\u8D26\u6237">\u91CD\u547D\u540D</button>
+          <button class="danger" type="button" data-account-id="${escapeHtml(item.id)}" data-account-action="delete" title="\u5220\u9664\u8D26\u6237" aria-label="\u5220\u9664\u8D26\u6237">\u5220\u9664</button>
+        </div>
+      </div>`;
+      }).join("");
       elements.currencyList.innerHTML = state.currencies.map((item) => `<span class="tag-item">${escapeHtml(item.code)} \xB7 ${escapeHtml(item.symbol)} \xB7 ${escapeHtml(item.name)} \xB7 ${item.rate}<button type="button" data-currency-code="${escapeHtml(item.code)}" title="\u5220\u9664\u5E01\u79CD" aria-label="\u5220\u9664\u5E01\u79CD">\xD7</button></span>`).join("");
       const dimensions = [
         ["member", currentMembers(), elements.memberTotal, elements.memberList],
@@ -1503,13 +2157,18 @@
         listElement.innerHTML = items.length ? items.map((item) => `<span class="tag-item">${escapeHtml(item.name)}<button type="button" data-${kind}-id="${escapeHtml(item.id)}" title="\u5220\u9664${escapeHtml(item.name)}" aria-label="\u5220\u9664${escapeHtml(item.name)}">\xD7</button></span>`).join("") : '<span class="muted-inline">\u6682\u65E0</span>';
       });
       elements.recycleList.innerHTML = state.recycleBin.length ? [...state.recycleBin].reverse().map((item) => {
-        const label = item.entityType === "book" ? `\u8D26\u672C\uFF1A${item.payload?.book?.name || "\u672A\u547D\u540D"}` : `\u8D26\u76EE\uFF1A${item.payload?.note || formatMoney(item.payload?.amount)}`;
+        const label = item.entityType === "book" ? `\u8D26\u672C\uFF1A${item.payload?.book?.name || "\u672A\u547D\u540D"}` : item.entityType === "account" ? `\u8D26\u6237\uFF1A${item.payload?.name || "\u672A\u547D\u540D"}` : item.entityType === "savings-plan" ? `\u5B58\u94B1\u8BA1\u5212\uFF1A${item.payload?.name || "\u672A\u547D\u540D"}` : item.entityType === "reimbursement" ? `\u62A5\u9500\u5230\u8D26\uFF1A${item.payload?.transactions?.[0]?.note || formatMoney(item.payload?.reimbursement?.actualAmount)}` : `\u8D26\u76EE\uFF1A${item.payload?.note || formatMoney(item.payload?.amount)}`;
         return `<article class="plan-item" data-trash-id="${escapeHtml(item.id)}"><div class="plan-copy"><strong>${escapeHtml(label)}</strong><small>${new Date(item.deletedAt).toLocaleString("zh-CN")}</small></div><div class="plan-actions"><button class="book-action" type="button" data-trash-action="restore">\u6062\u590D</button><button class="book-action danger" type="button" data-trash-action="delete">\u5F7B\u5E95\u5220\u9664</button></div></article>`;
       }).join("") : '<div class="empty-state"><strong>\u56DE\u6536\u7AD9\u4E3A\u7A7A</strong></div>';
       renderAutoBookingCandidates();
     }
     function renderAutoBookingCandidates() {
-      elements.autoBookingList.innerHTML = autoBookingCandidates.length ? autoBookingCandidates.map((item) => `<article class="plan-item" data-candidate-id="${escapeHtml(item.id)}"><div class="plan-copy"><strong>${escapeHtml(item.text)}</strong><small>${escapeHtml(item.source || "\u7CFB\u7EDF")} \xB7 ${new Date(Number(item.createdAt) || Date.now()).toLocaleString("zh-CN")}</small></div><div class="plan-actions"><button class="book-action" type="button" data-candidate-action="parse">\u89E3\u6790</button><button class="book-action danger" type="button" data-candidate-action="dismiss">\u5FFD\u7565</button></div></article>`).join("") : '<div class="empty-state"><strong>\u6682\u65E0\u5019\u9009</strong></div>';
+      elements.autoBookingList.innerHTML = autoBookingCandidates.length ? autoBookingCandidates.map((item) => {
+        const structured = Number(item.amount) > 0;
+        const title = structured ? `${item.type === "income" ? "\u6536\u5165" : "\u652F\u51FA"} ${formatMoney(item.amount)}${item.merchant ? ` \xB7 ${escapeHtml(item.merchant)}` : ""}` : escapeHtml(item.text);
+        const detail = `${escapeHtml(item.sourceApp || item.source || "\u7CFB\u7EDF")} \xB7 ${item.channel === "accessibility" ? "\u65E0\u969C\u788D" : item.channel === "notification" ? "\u901A\u77E5" : "\u5019\u9009"} \xB7 ${new Date(Number(item.createdAt) || Date.now()).toLocaleString("zh-CN")}${item.confidence ? ` \xB7 ${item.confidence}%` : ""}`;
+        return `<article class="plan-item" data-candidate-id="${escapeHtml(item.id)}"><div class="plan-copy"><strong>${title}</strong><small>${detail}</small></div><div class="plan-actions"><button class="book-action" type="button" data-candidate-action="parse">\u786E\u8BA4</button><button class="book-action danger" type="button" data-candidate-action="dismiss">\u5FFD\u7565</button></div></article>`;
+      }).join("") : '<div class="empty-state"><strong>\u6682\u65E0\u5019\u9009</strong></div>';
     }
     async function refreshAutoBookingStatus() {
       try {
@@ -1518,10 +2177,65 @@
         if (status.notificationAccess) labels.push("\u901A\u77E5");
         if (status.accessibilityAccess) labels.push("\u65E0\u969C\u788D");
         if (status.smsPermission) labels.push("\u77ED\u4FE1");
-        elements.autoBookingStatus.textContent = labels.length ? `${labels.join(" \xB7 ")}\u5DF2\u6388\u6743` : "\u672A\u6388\u6743";
+        const pending = Number(status.pendingCount || autoBookingCandidates.length || 0);
+        elements.autoBookingStatus.textContent = `${labels.length ? `${labels.join(" \xB7 ")}\u5DF2\u6388\u6743` : "\u672A\u6388\u6743"}${pending ? ` \xB7 ${pending} \u5F85\u786E\u8BA4` : ""}`;
       } catch {
         elements.autoBookingStatus.textContent = "\u72B6\u6001\u4E0D\u53EF\u7528";
       }
+    }
+    function mergeAutoBookingCandidates(items) {
+      const unresolved = (items || []).filter((item) => {
+        if (!item?.id) return false;
+        const alreadySaved = state.transactions.some((transaction) => transaction.autoBookingCandidateId === item.id);
+        if (alreadySaved) acknowledgeAutoBookingCandidate(item.id, "confirmed").catch(() => {
+        });
+        return !alreadySaved;
+      });
+      autoBookingCandidates = [...autoBookingCandidates, ...unresolved].filter((item, index, list) => list.findIndex((candidate) => candidate.id === item.id) === index).sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+      renderAutoBookingCandidates();
+    }
+    function openAutoBookingCandidate(candidate) {
+      if (!candidate) return;
+      const parsed = parseNaturalLanguage(candidate.text || "");
+      const type = ["income", "expense"].includes(candidate.type) ? candidate.type : parsed.type;
+      const accounts = availableAccounts();
+      const account = accounts.find((item) => item.name === candidate.sourceApp) || accounts[0];
+      if (!account) return showToast("\u5F53\u524D\u8D26\u672C\u6CA1\u6709\u53EF\u7528\u8D26\u6237", true);
+      currentAutoBookingCandidateId = candidate.id;
+      document.querySelector(`input[name="parsed-type"][value="${type}"]`).checked = true;
+      elements.parsedAmount.value = Number(candidate.amount) > 0 ? candidate.amount : parsed.amount || "";
+      elements.parsedCategory.value = parsed.categoryId;
+      elements.parsedAccount.value = account.id;
+      elements.parsedTargetAccount.value = accounts.find((item) => item.id !== account.id)?.id || account.id;
+      elements.parsedDate.value = localDate(new Date(Number(candidate.createdAt) || Date.now()));
+      elements.parsedNote.value = [candidate.sourceApp || candidate.source, candidate.merchant, "\u81EA\u52A8\u8BC6\u522B"].filter(Boolean).join(" \xB7 ");
+      elements.parseConfidence.textContent = `\u81EA\u52A8\u8BC6\u522B\u7F6E\u4FE1\u5EA6 ${Number(candidate.confidence || parsed.confidence || 0)}%`;
+      updateTransferFields("parsed");
+      elements.parseDialog.showModal();
+    }
+    async function refreshAutoBookingCandidates({ showPrompt = false } = {}) {
+      const result = await loadNotificationCandidates();
+      mergeAutoBookingCandidates(result.items || []);
+      await refreshAutoBookingStatus();
+      if (!showPrompt || elements.parseDialog.open) return;
+      const next = autoBookingCandidates.find((item) => !promptedAutoBookingCandidateIds.has(item.id));
+      if (!next) return;
+      promptedAutoBookingCandidateIds.add(next.id);
+      openAutoBookingCandidate(next);
+    }
+    function finishAutoBookingCandidate(id, status) {
+      if (!id) return;
+      autoBookingCandidates = autoBookingCandidates.filter((item) => item.id !== id);
+      renderAutoBookingCandidates();
+      acknowledgeAutoBookingCandidate(id, status).then(refreshAutoBookingStatus).catch(() => {
+      });
+      setTimeout(() => {
+        if (elements.parseDialog.open || elements.lockDialog.open) return;
+        const next = autoBookingCandidates.find((item) => !promptedAutoBookingCandidateIds.has(item.id));
+        if (!next) return;
+        promptedAutoBookingCandidateIds.add(next.id);
+        openAutoBookingCandidate(next);
+      }, 0);
     }
     function renderSearch() {
       const query = elements.searchQuery.value.trim().toLocaleLowerCase("zh-CN");
@@ -1555,16 +2269,30 @@
       const expenses = currentTransactions().filter((item) => item.type === "expense" && monthKey(item.date) === month);
       const budgets = state.budgets.filter((item) => item.bookId === state.activeBookId && item.kind === "category");
       const goals = state.budgets.filter((item) => item.bookId === state.activeBookId && item.kind === "goal");
+      const savingsPlans = state.savingsPlans.filter((item) => item.bookId === state.activeBookId && !item.deletedAt);
       const schedules = state.schedules.filter((item) => item.bookId === state.activeBookId && item.active !== false);
       const installments = state.installments.filter((item) => item.bookId === state.activeBookId && !item.deletedAt);
       elements.categoryBudgetList.innerHTML = budgets.length ? budgets.map((budget) => {
-        const spent = expenses.filter((item) => item.categoryId === budget.categoryId).reduce((sum, item) => sum + baseAmount(item), 0);
+        const spent = expenses.filter((item) => item.categoryId === budget.categoryId).reduce((sum, item) => sum + netBaseAmount(item), 0);
         const percent = budget.amount > 0 ? Math.round(spent / budget.amount * 100) : 0;
         return `<article class="plan-item" data-budget-id="${escapeHtml(budget.id)}">
         <div class="plan-copy"><strong>${escapeHtml(categoryById(budget.categoryId).name)} \xB7 ${formatMoney(spent)} / ${formatMoney(budget.amount)}</strong><small>${percent}%</small><div class="plan-progress"><span style="width:${Math.min(100, percent)}%;background:${percent > 100 ? "var(--expense)" : "var(--income)"}"></span></div></div>
         <div class="plan-actions"><button class="book-action danger" type="button" data-plan-action="delete-budget">\u5220\u9664</button></div>
       </article>`;
       }).join("") : '<div class="empty-state"><strong>\u6682\u65E0\u5206\u7C7B\u9884\u7B97</strong></div>';
+      const templateLabels = { daily365: "365\u5929", weekly52: "52\u5468", monthlyFixed: "\u6BCF\u6708\u5B9A\u989D", custom: "\u81EA\u5B9A\u4E49" };
+      elements.savingsPlanList.innerHTML = savingsPlans.length ? savingsPlans.map((plan) => {
+        const progress = savingsPlanProgress(state, plan);
+        const source = accountById(plan.sourceAccountId);
+        const target = accountById(plan.targetAccountId);
+        const paused = plan.status === "paused";
+        const status = progress.complete ? "\u5DF2\u5B8C\u6210" : paused ? "\u5DF2\u6682\u505C" : "\u8FDB\u884C\u4E2D";
+        const nextText = progress.complete ? `\u5171 ${progress.completedPeriods} \u671F \xB7 ${escapeHtml(source.name)} \u2192 ${escapeHtml(target.name)}` : `\u7B2C ${progress.nextPeriod}/${plan.totalPeriods} \u671F \xB7 ${progress.nextDate} \xB7 ${formatPlanMoney(progress.nextAmount, plan.currencyCode)} \xB7 ${escapeHtml(source.name)} \u2192 ${escapeHtml(target.name)}`;
+        return `<article class="plan-item savings-plan-item" data-savings-plan-id="${escapeHtml(plan.id)}">
+        <div class="plan-copy"><strong>${escapeHtml(plan.name)} \xB7 ${status}</strong><small>${templateLabels[plan.template] || "\u81EA\u5B9A\u4E49"} \xB7 \u5DF2\u5B58 ${formatPlanMoney(progress.savedAmount, plan.currencyCode)} / ${formatPlanMoney(progress.targetAmount, plan.currencyCode)}</small><small>${nextText}</small><div class="plan-progress"><span style="width:${progress.percentage}%"></span></div></div>
+        <div class="plan-actions">${progress.complete ? "" : paused ? '<button class="book-action" type="button" data-plan-action="resume-savings">\u7EE7\u7EED</button>' : '<button class="book-action" type="button" data-plan-action="deposit-savings">\u5B58\u4E00\u671F</button><button class="book-action" type="button" data-plan-action="pause-savings">\u6682\u505C</button>'}<button class="book-action danger" type="button" data-plan-action="delete-savings">\u5220\u9664</button></div>
+      </article>`;
+      }).join("") : '<div class="empty-state"><strong>\u6682\u65E0\u5B58\u94B1\u8BA1\u5212</strong></div>';
       elements.goalList.innerHTML = goals.length ? goals.map((goal) => {
         const percent = goal.targetAmount > 0 ? Math.round(goal.currentAmount / goal.targetAmount * 100) : 0;
         return `<article class="plan-item" data-goal-id="${escapeHtml(goal.id)}">
@@ -1581,7 +2309,78 @@
       const reimbursements = currentTransactions().filter((item) => item.type === "expense" && item.reimburseStatus === "pending");
       const reimbursementTotal = reimbursements.reduce((sum, item) => sum + baseAmount(item), 0);
       elements.reimbursementTotal.textContent = formatMoney(reimbursementTotal);
-      elements.reimbursementList.innerHTML = reimbursements.length ? reimbursements.map((item) => `<article class="plan-item" data-reimbursement-id="${escapeHtml(item.id)}"><div class="plan-copy"><strong>${escapeHtml(item.note || categoryById(item.categoryId).name)} \xB7 ${formatMoney(baseAmount(item))}</strong><small>${item.date} \xB7 ${escapeHtml(accountById(item.accountId).name)}</small></div><div class="plan-actions"><button class="book-action" type="button" data-plan-action="settle-reimbursement">\u786E\u8BA4\u5230\u8D26</button></div></article>`).join("") : '<div class="empty-state"><strong>\u6682\u65E0\u5F85\u62A5\u9500\u8D26\u76EE</strong></div>';
+      elements.reimbursementList.innerHTML = reimbursements.length ? reimbursements.map((item) => `<label class="plan-item pending-settlement-item"><input type="checkbox" value="${escapeHtml(item.id)}" /><span class="plan-copy"><strong>${escapeHtml(item.note || categoryById(item.categoryId).name)} \xB7 ${formatMoney(baseAmount(item))}</strong><small>${item.date} \xB7 ${escapeHtml(accountById(item.accountId).name)}</small></span></label>`).join("") : '<div class="empty-state"><strong>\u6682\u65E0\u5F85\u62A5\u9500\u8D26\u76EE</strong></div>';
+      const pendingSettlements = currentTransactions().filter((item) => ["payable", "receivable"].includes(item.type) && remainingSettlementAmount(state, item.id) > 0);
+      elements.pendingSettlementList.innerHTML = pendingSettlements.length ? pendingSettlements.map((item) => {
+        const remaining = remainingSettlementAmount(state, item.id);
+        return `<label class="plan-item pending-settlement-item"><input type="checkbox" value="${escapeHtml(item.id)}" /><span class="plan-copy"><strong>${item.type === "receivable" ? "\u5E94\u6536" : "\u5E94\u4ED8"} \xB7 ${escapeHtml(item.note || categoryById(item.categoryId).name)}</strong><small>\u5269\u4F59 ${formatMoney(remaining * (item.exchangeRate || 1))} \xB7 ${item.date}</small></span></label>`;
+      }).join("") : '<div class="empty-state"><strong>\u6682\u65E0\u5F85\u7ED3\u7B97\u6B3E\u9879</strong></div>';
+    }
+    function savingsPlanFormValues() {
+      return {
+        template: elements.savingsPlanTemplate.value,
+        name: elements.savingsPlanName.value.trim(),
+        bookId: state.activeBookId,
+        sourceAccountId: elements.savingsPlanSource.value,
+        targetAccountId: elements.savingsPlanTarget.value,
+        startDate: elements.savingsPlanStartDate.value,
+        frequency: elements.savingsPlanFrequency.value,
+        totalPeriods: Number(elements.savingsPlanPeriods.value),
+        startAmount: Number(elements.savingsPlanStartAmount.value),
+        incrementAmount: Number(elements.savingsPlanIncrement.value)
+      };
+    }
+    function updateSavingsPlanPreview() {
+      try {
+        const values = validateSavingsPlan(savingsPlanFormValues(), state);
+        elements.savingsPlanPreview.textContent = `${values.totalPeriods} \u671F \xB7 \u8BA1\u5212\u603B\u989D ${formatPlanMoney(values.targetAmount, values.currencyCode)}`;
+      } catch (error) {
+        elements.savingsPlanPreview.textContent = error.message;
+      }
+    }
+    function applySavingsPlanPreset() {
+      const template = elements.savingsPlanTemplate.value;
+      const preset = savingsPlanPreset(template);
+      elements.savingsPlanName.value = preset.name;
+      elements.savingsPlanFrequency.value = preset.frequency;
+      elements.savingsPlanPeriods.value = preset.totalPeriods;
+      elements.savingsPlanStartAmount.value = preset.startAmount;
+      elements.savingsPlanIncrement.value = preset.incrementAmount;
+      const fixed = ["daily365", "weekly52"].includes(template);
+      [elements.savingsPlanFrequency, elements.savingsPlanPeriods, elements.savingsPlanStartAmount, elements.savingsPlanIncrement].forEach((input) => {
+        input.disabled = fixed;
+      });
+      updateSavingsPlanPreview();
+    }
+    function openSavingsPlanDialog() {
+      const accounts = availableAccounts();
+      if (accounts.length < 2) return showToast("\u81F3\u5C11\u9700\u8981\u4E24\u4E2A\u53EF\u7528\u8D26\u6237\u624D\u80FD\u521B\u5EFA\u5B58\u94B1\u8BA1\u5212", true);
+      elements.savingsPlanForm.reset();
+      renderSelects();
+      elements.savingsPlanTemplate.value = "daily365";
+      elements.savingsPlanStartDate.value = localDate();
+      elements.savingsPlanSource.value = accounts[0].id;
+      const target = accounts.find((item) => item.id !== accounts[0].id && item.currencyCode === accounts[0].currencyCode);
+      elements.savingsPlanTarget.value = target?.id || accounts[1].id;
+      applySavingsPlanPreset();
+      elements.savingsPlanDialog.showModal();
+    }
+    function openSavingsDepositDialog(planId) {
+      const plan = state.savingsPlans.find((item) => item.id === planId && !item.deletedAt);
+      if (!plan) return showToast("\u5B58\u94B1\u8BA1\u5212\u4E0D\u5B58\u5728", true);
+      if (plan.status === "paused") return showToast("\u8BF7\u5148\u7EE7\u7EED\u8BE5\u8BA1\u5212", true);
+      const progress = savingsPlanProgress(state, plan);
+      if (progress.complete) return showToast("\u8BE5\u8BA1\u5212\u5DF2\u7ECF\u5B8C\u6210");
+      const source = state.accounts.find((item) => item.id === plan.sourceAccountId);
+      const target = state.accounts.find((item) => item.id === plan.targetAccountId);
+      if (!accountAvailableInBook(source, plan.bookId) || !accountAvailableInBook(target, plan.bookId)) {
+        return showToast("\u8BA1\u5212\u5173\u8054\u8D26\u6237\u5F53\u524D\u4E0D\u53EF\u7528", true);
+      }
+      elements.savingsDepositPlanId.value = plan.id;
+      elements.savingsDepositTitle.textContent = `${plan.name} \xB7 \u7B2C ${progress.nextPeriod} \u671F`;
+      elements.savingsDepositSummary.textContent = `${formatPlanMoney(progress.nextAmount, plan.currencyCode)} \xB7 ${source.name} \u2192 ${target.name}`;
+      elements.savingsDepositDate.value = progress.nextDate;
+      elements.savingsDepositDialog.showModal();
     }
     function renderTemplates() {
       const templates = state.templates.filter((item) => item.bookId === state.activeBookId);
@@ -1700,6 +2499,10 @@
     function editTransaction(id) {
       const item = state.transactions.find((transaction) => transaction.id === id);
       if (!item) return;
+      if (item.savingsPlanId) {
+        showToast("\u8BA1\u5212\u5B58\u6B3E\u4E0D\u80FD\u76F4\u63A5\u7F16\u8F91\uFF0C\u8BF7\u5220\u9664\u540E\u91CD\u65B0\u6267\u884C\u8BE5\u671F", true);
+        return;
+      }
       switchView("record");
       elements.transactionId.value = item.id;
       document.querySelector(`input[name="type"][value="${item.type}"]`).checked = true;
@@ -1732,6 +2535,39 @@
     function deleteTransaction(id) {
       const item = state.transactions.find((transaction) => transaction.id === id);
       if (!item) return;
+      const reimbursement = item.reimbursementId ? state.reimbursements.find((candidate) => candidate.id === item.reimbursementId && !candidate.deletedAt) : null;
+      if (reimbursement?.sourceTransactionIds.includes(item.id)) {
+        showToast("\u8BF7\u5148\u5220\u9664\u5173\u8054\u7684\u62A5\u9500\u5230\u8D26\u8BB0\u5F55\uFF0C\u518D\u5220\u9664\u5F85\u62A5\u9500\u660E\u7EC6", true);
+        return;
+      }
+      if (reimbursement) {
+        if (!window.confirm("\u5220\u9664\u62A5\u9500\u5230\u8D26\u4F1A\u540C\u65F6\u64A4\u9500\u5DEE\u989D\u660E\u7EC6\uFF0C\u5E76\u5C06\u6765\u6E90\u6062\u590D\u4E3A\u5F85\u62A5\u9500\u3002\u786E\u5B9A\u7EE7\u7EED\u5417\uFF1F")) return;
+        const generatedIds = [reimbursement.transactionId, reimbursement.differenceTransactionId].filter(Boolean);
+        const generatedTransactions = state.transactions.filter((transaction) => generatedIds.includes(transaction.id));
+        const deletedAt = (/* @__PURE__ */ new Date()).toISOString();
+        state.recycleBin.push({
+          id: makeId("trash"),
+          entityType: "reimbursement",
+          deletedAt,
+          payload: {
+            reimbursement: structuredClone(reimbursement),
+            transactions: structuredClone(generatedTransactions)
+          }
+        });
+        reimbursement.deletedAt = deletedAt;
+        reimbursement.sourceTransactionIds.forEach((sourceId) => {
+          const source = state.transactions.find((candidate) => candidate.id === sourceId);
+          if (!source) return;
+          source.reimburseStatus = "pending";
+          source.reimbursementId = null;
+          source.relationGroupId = null;
+          source.linkedTransactionId = null;
+          source.updatedAt = deletedAt;
+        });
+        state.transactions = state.transactions.filter((transaction) => !generatedIds.includes(transaction.id));
+        saveState("\u62A5\u9500\u5230\u8D26\u5DF2\u64A4\u9500\uFF0C\u6765\u6E90\u5DF2\u6062\u590D\u4E3A\u5F85\u62A5\u9500");
+        return;
+      }
       if (!window.confirm(`\u786E\u5B9A\u5220\u9664\u201C${item.note || categoryById(item.categoryId).name}\u201D\u8FD9\u7B14\u8BB0\u5F55\u5417\uFF1F`)) return;
       state.recycleBin.push({
         id: makeId("trash"),
@@ -1739,8 +2575,123 @@
         deletedAt: (/* @__PURE__ */ new Date()).toISOString(),
         payload: structuredClone(item)
       });
+      const settlement = item.settlementId ? state.settlements.find((candidate) => candidate.id === item.settlementId && !candidate.deletedAt) : null;
+      if (settlement) {
+        settlement.deletedAt = (/* @__PURE__ */ new Date()).toISOString();
+        settlement.sourceTransactionIds.forEach((sourceId) => {
+          const source = state.transactions.find((candidate) => candidate.id === sourceId);
+          if (source) source.status = "pending";
+        });
+      }
       state.transactions = state.transactions.filter((transaction) => transaction.id !== id);
       saveState("\u8D26\u76EE\u5DF2\u79FB\u5165\u56DE\u6536\u7AD9");
+    }
+    function renderRefundRecords(transactionId) {
+      const refunds = (state.refunds || []).filter((item) => item.transactionId === transactionId && !item.deletedAt);
+      elements.refundRecordList.innerHTML = refunds.length ? refunds.map((item) => `<article class="plan-item" data-refund-id="${escapeHtml(item.id)}"><div class="plan-copy"><strong>${formatMoney(item.accountAmount * (item.exchangeRate || 1))}</strong><small>${item.date} \xB7 ${escapeHtml(accountById(item.accountId).name)}${item.note ? ` \xB7 ${escapeHtml(item.note)}` : ""}</small></div><div class="plan-actions"><button class="book-action" type="button" data-refund-action="edit">\u7F16\u8F91</button><button class="book-action danger" type="button" data-refund-action="delete">\u5220\u9664</button></div></article>`).join("") : '<div class="empty-state"><strong>\u6682\u65E0\u9000\u6B3E\u8BB0\u5F55</strong></div>';
+    }
+    function updateRefundAccountAmount() {
+      const transaction = state.transactions.find((item) => item.id === elements.refundTransactionId.value);
+      const account = state.accounts.find((item) => item.id === elements.refundAccount.value);
+      const amount = Number(elements.refundAmount.value);
+      if (!transaction || !account || !(amount > 0)) return;
+      const accountRate = currencyByCode(account.currencyCode).rate || 1;
+      elements.refundAccountAmount.value = String(roundMoney(amount * (transaction.exchangeRate || 1) / accountRate));
+    }
+    function openRefundDialog(transactionId) {
+      const transaction = state.transactions.find((item) => item.id === transactionId && !item.deletedAt);
+      if (!transaction || !["expense", "income"].includes(transaction.type)) return;
+      const remaining = roundMoney(transaction.amount - refundedAmount(state, transaction.id));
+      const accounts = availableAccounts(transaction.bookId);
+      if (!accounts.length) return showToast("\u5F53\u524D\u8D26\u672C\u6CA1\u6709\u53EF\u7528\u9000\u6B3E\u8D26\u6237", true);
+      editingRefundId = null;
+      elements.refundTransactionId.value = transaction.id;
+      elements.refundDialogTitle.textContent = transaction.type === "expense" ? "\u8BB0\u5F55\u652F\u51FA\u9000\u6B3E" : "\u8BB0\u5F55\u6536\u5165\u9000\u56DE";
+      elements.refundRemaining.textContent = `\u539F\u91D1\u989D ${formatMoney(baseAmount(transaction))} \xB7 \u8FD8\u53EF\u9000\u6B3E ${formatMoney(remaining * (transaction.exchangeRate || 1))}`;
+      elements.refundAmount.max = String(remaining);
+      elements.refundAmount.value = String(remaining);
+      elements.refundAccount.innerHTML = accounts.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
+      elements.refundAccount.value = accounts.some((item) => item.id === transaction.accountId) ? transaction.accountId : accounts[0].id;
+      updateRefundAccountAmount();
+      elements.refundDate.value = localDate();
+      elements.refundNote.value = "";
+      renderRefundRecords(transaction.id);
+      elements.refundDialog.showModal();
+    }
+    function openSettlementDialog(transactionIds) {
+      const ids = Array.isArray(transactionIds) ? transactionIds : [transactionIds];
+      const transactions = ids.map((id) => state.transactions.find((item) => item.id === id && !item.deletedAt)).filter(Boolean);
+      if (!transactions.length) return;
+      const first = transactions[0];
+      if (transactions.some((item) => item.bookId !== first.bookId)) return showToast("\u4E0D\u540C\u8D26\u672C\u4E0D\u80FD\u5408\u5E76\u7ED3\u7B97", true);
+      if (transactions.some((item) => item.type !== first.type)) return showToast("\u5E94\u6536\u548C\u5E94\u4ED8\u4E0D\u80FD\u5408\u5E76\u7ED3\u7B97", true);
+      if (transactions.some((item) => item.currencyCode !== first.currencyCode || Number(item.exchangeRate || 1) !== Number(first.exchangeRate || 1))) {
+        return showToast("\u4E0D\u540C\u5E01\u79CD\u6216\u6C47\u7387\u7684\u660E\u7EC6\u4E0D\u80FD\u5408\u5E76\u7ED3\u7B97", true);
+      }
+      const remaining = roundMoney(transactions.reduce((sum, item) => sum + remainingSettlementAmount(state, item.id), 0));
+      if (remaining <= 0) return;
+      const accounts = availableAccounts(first.bookId);
+      if (!accounts.length) return showToast("\u5F53\u524D\u8D26\u672C\u6CA1\u6709\u53EF\u7528\u7ED3\u7B97\u8D26\u6237", true);
+      elements.settlementTransactionId.value = JSON.stringify(transactions.map((item) => item.id));
+      elements.settlementDialogTitle.textContent = first.type === "receivable" ? "\u786E\u8BA4\u6536\u6B3E" : "\u786E\u8BA4\u4ED8\u6B3E";
+      elements.settlementRemaining.textContent = `${transactions.length} \u7B14 \xB7 \u5F85\u7ED3\u7B97 ${formatMoney(remaining * (first.exchangeRate || 1))}`;
+      elements.settlementAmount.max = String(remaining);
+      elements.settlementAmount.value = String(remaining);
+      elements.settlementAccount.innerHTML = accounts.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
+      elements.settlementAccount.value = accounts.some((item) => item.id === first.accountId) ? first.accountId : accounts[0].id;
+      elements.settlementDate.value = localDate();
+      elements.settlementNote.value = "";
+      elements.settlementDialog.showModal();
+    }
+    function openReimbursementDialog(transactionIds) {
+      const ids = Array.isArray(transactionIds) ? transactionIds : [transactionIds];
+      const sources = ids.map((id) => state.transactions.find((item) => item.id === id && !item.deletedAt)).filter(Boolean);
+      if (!sources.length) return;
+      const first = sources[0];
+      if (sources.some((item) => item.type !== "expense" || item.reimburseStatus !== "pending")) {
+        return showToast("\u6240\u9009\u660E\u7EC6\u5305\u542B\u4E0D\u53EF\u62A5\u9500\u9879\u76EE", true);
+      }
+      if (sources.some((item) => item.bookId !== first.bookId)) return showToast("\u4E0D\u540C\u8D26\u672C\u4E0D\u80FD\u5408\u5E76\u62A5\u9500", true);
+      if (sources.some((item) => item.currencyCode !== first.currencyCode || Number(item.exchangeRate || 1) !== Number(first.exchangeRate || 1))) {
+        return showToast("\u4E0D\u540C\u5E01\u79CD\u6216\u6C47\u7387\u7684\u660E\u7EC6\u4E0D\u80FD\u5408\u5E76\u62A5\u9500", true);
+      }
+      const accounts = availableAccounts(first.bookId);
+      if (!accounts.length) return showToast("\u5F53\u524D\u8D26\u672C\u6CA1\u6709\u53EF\u7528\u5230\u8D26\u8D26\u6237", true);
+      const expected = roundMoney(sources.reduce((total, item) => total + item.amount, 0));
+      elements.reimbursementTransactionIds.value = JSON.stringify(ids);
+      elements.reimbursementSummary.textContent = `${sources.length} \u7B14 \xB7 \u5F85\u62A5\u9500 ${formatMoney(expected * (first.exchangeRate || 1))}`;
+      elements.reimbursementActualAmount.value = String(expected);
+      elements.reimbursementAccount.innerHTML = accounts.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
+      elements.reimbursementAccount.value = accounts.some((item) => item.id === first.accountId) ? first.accountId : accounts[0].id;
+      elements.reimbursementDate.value = localDate();
+      elements.reimbursementNote.value = "";
+      elements.reimbursementDialog.showModal();
+    }
+    function openCreditStatementDialog(accountId) {
+      const account = state.accounts.find((item) => item.id === accountId && item.type === "credit" && !item.deletedAt);
+      if (!account) return;
+      try {
+        const summary = calculateCreditStatementSummary(state, account.id, localDate());
+        elements.creditStatementTitle.textContent = `${account.name}\u8D26\u5355`;
+        elements.creditStatementSummary.innerHTML = `
+        <span><small>\u603B\u6B20\u6B3E</small><strong>${formatMoney(summary.totalDebt)}</strong></span>
+        <span><small>\u672C\u671F\u5269\u4F59\u5E94\u8FD8</small><strong>${formatMoney(summary.currentDue)}</strong></span>
+        <span><small>\u5F85\u51FA\u8D26</small><strong>${formatMoney(summary.unbilledAmount)}</strong></span>
+        <span><small>\u6EA2\u7F34\u6B3E</small><strong>${formatMoney(summary.overpayment)}</strong></span>
+        ${summary.untrackedDebt > 0 ? `<p>\u521D\u59CB\u6B20\u6B3E ${formatMoney(summary.untrackedDebt)} \u672A\u5F52\u5165\u8D26\u5355\u5468\u671F\uFF1B\u6309\u76EE\u6807\u89C4\u5219\u5EFA\u8BAE\u7528\u5BF9\u5E94\u5468\u671F\u7684\u6C47\u603B\u652F\u51FA\u8865\u5F55\u3002</p>` : ""}
+      `;
+        const visibleStatements = [...summary.statements].filter((item) => item.grossAmount > 0 || item.incomeCredit > 0 || item.sameCycleRefund > 0).reverse();
+        elements.creditStatementList.innerHTML = visibleStatements.length ? visibleStatements.map((item) => {
+          const issued = item.statementDate <= summary.asOfDate;
+          const detail = issued ? `\u5E94\u8FD8 ${formatMoney(item.issuedDue)} \xB7 \u5DF2\u8FD8 ${formatMoney(item.repaymentApplied)} \xB7 \u5269\u4F59 ${formatMoney(item.remainingDue)}` : `\u5F85\u51FA\u8D26 ${formatMoney(item.statementAmount)} \xB7 \u6536\u5165\u62B5\u6263 ${formatMoney(item.incomeCredit)}`;
+          const refundText = item.sameCycleRefund > 0 ? ` \xB7 \u540C\u671F\u9000\u6B3E ${formatMoney(item.sameCycleRefund)}` : "";
+          const overpaymentText = item.overpaymentApplied > 0 ? ` \xB7 \u6EA2\u7F34\u62B5\u6263 ${formatMoney(item.overpaymentApplied)}` : "";
+          return `<article class="plan-item"><div class="plan-copy"><strong>${item.statementDate} \xB7 \u51FA\u8D26 ${formatMoney(item.statementAmount)}</strong><small>\u8FD8\u6B3E\u65E5 ${item.repaymentDate} \xB7 ${detail}${refundText}${overpaymentText}</small></div><span class="local-chip">${issued ? item.remainingDue > 0 ? "\u5F85\u8FD8" : "\u5DF2\u7ED3\u6E05" : "\u672A\u51FA\u8D26"}</span></article>`;
+        }).join("") : '<div class="empty-state"><strong>\u6682\u65E0\u4FE1\u7528\u8D26\u5355</strong></div>';
+        elements.creditStatementDialog.showModal();
+      } catch (error) {
+        showToast(error.message, true);
+      }
     }
     function updateTransferFields(scope) {
       const isParsed = scope === "parsed";
@@ -1822,6 +2773,7 @@
         showToast("\u8BF7\u5148\u63CF\u8FF0\u4E00\u7B14\u6536\u652F", true);
         return;
       }
+      currentAutoBookingCandidateId = null;
       const result = parseNaturalLanguage(text);
       document.querySelector(`input[name="parsed-type"][value="${result.type}"]`).checked = true;
       elements.parsedAmount.value = result.amount || "";
@@ -1851,6 +2803,13 @@
       }
     }
     function saveParsedTransaction() {
+      const candidateId = currentAutoBookingCandidateId;
+      if (candidateId && state.transactions.some((item) => item.autoBookingCandidateId === candidateId)) {
+        finishAutoBookingCandidate(candidateId, "confirmed");
+        currentAutoBookingCandidateId = null;
+        elements.parseDialog.close();
+        throw new Error("\u8BE5\u81EA\u52A8\u8BC6\u522B\u8D26\u5355\u5DF2\u7ECF\u5165\u8D26");
+      }
       const type = document.querySelector('input[name="parsed-type"]:checked').value;
       const amount = Number(elements.parsedAmount.value);
       if (!Number.isFinite(amount) || amount <= 0) throw new Error("\u8BF7\u786E\u8BA4\u6709\u6548\u91D1\u989D");
@@ -1882,6 +2841,8 @@
         photos: [],
         location: null,
         linkedTransactionId: null,
+        autoBookingCandidateId: candidateId || null,
+        generatedBy: candidateId ? { kind: "auto-booking", candidateId } : null,
         reconciled: false,
         deletedAt: null,
         createdAt: now,
@@ -1890,6 +2851,8 @@
       elements.quickRecordInput.value = "";
       elements.recordPageQuickInput.value = "";
       elements.parseDialog.close();
+      if (candidateId) finishAutoBookingCandidate(candidateId, "confirmed");
+      currentAutoBookingCandidateId = null;
       saveState("\u5DF2\u4FDD\u5B58\u5230\u672C\u5730\u8D26\u672C");
     }
     function showToast(message, isError = false) {
@@ -2307,6 +3270,7 @@
       elements.parseConfirmForm.addEventListener("submit", (event) => {
         event.preventDefault();
         if (event.submitter?.value === "cancel") {
+          currentAutoBookingCandidateId = null;
           elements.parseDialog.close();
           return;
         }
@@ -2440,7 +3404,284 @@
           if (!button || !item) return;
           if (button.dataset.action === "edit") editTransaction(item.dataset.id);
           if (button.dataset.action === "delete") deleteTransaction(item.dataset.id);
+          if (button.dataset.action === "refund") openRefundDialog(item.dataset.id);
+          if (button.dataset.action === "settle") openSettlementDialog(item.dataset.id);
         });
+      });
+      document.querySelectorAll("[data-dialog-close]").forEach((button) => {
+        button.addEventListener("click", () => elements[button.dataset.dialogClose]?.close());
+      });
+      elements.openSavingsPlan.addEventListener("click", openSavingsPlanDialog);
+      elements.savingsPlanTemplate.addEventListener("change", applySavingsPlanPreset);
+      [
+        elements.savingsPlanName,
+        elements.savingsPlanSource,
+        elements.savingsPlanTarget,
+        elements.savingsPlanStartDate,
+        elements.savingsPlanFrequency,
+        elements.savingsPlanPeriods,
+        elements.savingsPlanStartAmount,
+        elements.savingsPlanIncrement
+      ].forEach((input) => input.addEventListener(input.tagName === "SELECT" ? "change" : "input", updateSavingsPlanPreview));
+      elements.savingsPlanForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        try {
+          const values = validateSavingsPlan(savingsPlanFormValues(), state);
+          state.savingsPlans.push({
+            id: makeId("saving"),
+            ...values,
+            deletedAt: null,
+            createdAt: (/* @__PURE__ */ new Date()).toISOString()
+          });
+          elements.savingsPlanDialog.close();
+          saveState("\u5B58\u94B1\u8BA1\u5212\u5DF2\u521B\u5EFA");
+        } catch (error) {
+          showToast(error.message, true);
+        }
+      });
+      elements.savingsDepositForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        try {
+          const plan = state.savingsPlans.find((item) => item.id === elements.savingsDepositPlanId.value && !item.deletedAt);
+          if (!plan || plan.status === "paused") throw new Error("\u5B58\u94B1\u8BA1\u5212\u5F53\u524D\u4E0D\u53EF\u6267\u884C");
+          const progress = savingsPlanProgress(state, plan);
+          if (progress.complete) throw new Error("\u5B58\u94B1\u8BA1\u5212\u5DF2\u7ECF\u5B8C\u6210");
+          const category = currentCategories().find((item) => item.kind === "transfer") || currentCategories()[0];
+          const now = (/* @__PURE__ */ new Date()).toISOString();
+          const transaction = validateTransaction({
+            id: makeId("tx"),
+            bookId: plan.bookId,
+            type: "transfer",
+            amount: progress.nextAmount,
+            categoryId: category.id,
+            accountId: plan.sourceAccountId,
+            targetAccountId: plan.targetAccountId,
+            date: elements.savingsDepositDate.value,
+            time: (/* @__PURE__ */ new Date()).toTimeString().slice(0, 5),
+            note: `${plan.name} \xB7 \u7B2C${progress.nextPeriod}\u671F`,
+            status: "posted",
+            reimburseStatus: "none",
+            currencyCode: plan.currencyCode,
+            exchangeRate: currencyByCode(plan.currencyCode).rate || 1,
+            originalAmount: progress.nextAmount,
+            tagIds: [],
+            merchantId: null,
+            memberShares: [],
+            budgetIncluded: false,
+            photos: [],
+            location: null,
+            linkedTransactionId: null,
+            savingsPlanId: plan.id,
+            savingsPlanPeriod: progress.nextPeriod,
+            generatedBy: { kind: "savings-plan", savingsPlanId: plan.id, period: progress.nextPeriod },
+            reconciled: false,
+            deletedAt: null,
+            createdAt: now,
+            updatedAt: now
+          }, state);
+          state.transactions.push(transaction);
+          elements.savingsDepositDialog.close();
+          saveState(`\u7B2C ${progress.nextPeriod} \u671F\u5DF2\u8F6C\u5165\u5B58\u6B3E\u8D26\u6237`);
+        } catch (error) {
+          showToast(error.message, true);
+        }
+      });
+      elements.refundForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        try {
+          const transaction = state.transactions.find((item) => item.id === elements.refundTransactionId.value);
+          const values = validateRefund({
+            refundId: editingRefundId,
+            transactionId: transaction?.id,
+            accountId: elements.refundAccount.value,
+            amount: Number(elements.refundAmount.value),
+            accountAmount: Number(elements.refundAccountAmount.value),
+            date: elements.refundDate.value,
+            time: (/* @__PURE__ */ new Date()).toTimeString().slice(0, 5),
+            note: elements.refundNote.value.trim()
+          }, state);
+          const now = (/* @__PURE__ */ new Date()).toISOString();
+          const editingRefund = editingRefundId ? state.refunds.find((item) => item.id === editingRefundId && !item.deletedAt) : null;
+          if (editingRefund) Object.assign(editingRefund, values, { updatedAt: now });
+          else state.refunds.push({
+            id: makeId("refund"),
+            ...values,
+            deletedAt: null,
+            createdAt: now,
+            updatedAt: now
+          });
+          const message = editingRefund ? "\u9000\u6B3E\u8BB0\u5F55\u5DF2\u66F4\u65B0" : "\u9000\u6B3E\u8BB0\u5F55\u5DF2\u4FDD\u5B58\uFF0C\u4F59\u989D\u4E0E\u7EDF\u8BA1\u5DF2\u6309\u51C0\u989D\u66F4\u65B0";
+          editingRefundId = null;
+          elements.refundDialog.close();
+          saveState(message);
+        } catch (error) {
+          showToast(error.message, true);
+        }
+      });
+      elements.refundRecordList.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-refund-action]");
+        const row = event.target.closest("[data-refund-id]");
+        if (!button || !row) return;
+        const refund = state.refunds.find((item) => item.id === row.dataset.refundId && !item.deletedAt);
+        if (button.dataset.refundAction === "edit") {
+          const transaction = state.transactions.find((item) => item.id === refund?.transactionId && !item.deletedAt);
+          if (!refund || !transaction) return;
+          editingRefundId = refund.id;
+          elements.refundDialogTitle.textContent = transaction.type === "expense" ? "\u7F16\u8F91\u652F\u51FA\u9000\u6B3E" : "\u7F16\u8F91\u6536\u5165\u9000\u56DE";
+          elements.refundAmount.max = String(roundMoney(transaction.amount - refundedAmount(state, transaction.id) + refund.amount));
+          elements.refundAmount.value = String(refund.amount);
+          elements.refundAccount.value = [...elements.refundAccount.options].some((option) => option.value === refund.accountId) ? refund.accountId : elements.refundAccount.options[0]?.value || "";
+          if (elements.refundAccount.value === refund.accountId) elements.refundAccountAmount.value = String(refund.accountAmount);
+          else updateRefundAccountAmount();
+          elements.refundDate.value = refund.date;
+          elements.refundNote.value = refund.note || "";
+          return;
+        }
+        if (button.dataset.refundAction !== "delete") return;
+        if (!refund || !window.confirm("\u786E\u5B9A\u5220\u9664\u8BE5\u9000\u6B3E\u8BB0\u5F55\u5417\uFF1F\u4F59\u989D\u548C\u7EDF\u8BA1\u4F1A\u6062\u590D\u3002")) return;
+        refund.deletedAt = (/* @__PURE__ */ new Date()).toISOString();
+        editingRefundId = null;
+        elements.refundDialog.close();
+        saveState("\u9000\u6B3E\u8BB0\u5F55\u5DF2\u5220\u9664");
+      });
+      elements.refundAmount.addEventListener("input", updateRefundAccountAmount);
+      elements.refundAccount.addEventListener("change", updateRefundAccountAmount);
+      elements.reimbursementForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        try {
+          const sourceIds = JSON.parse(elements.reimbursementTransactionIds.value);
+          const sources = sourceIds.map((id) => state.transactions.find((item) => item.id === id)).filter(Boolean);
+          const values = validateReimbursement({
+            sourceTransactionIds: sourceIds,
+            accountId: elements.reimbursementAccount.value,
+            actualAmount: Number(elements.reimbursementActualAmount.value),
+            date: elements.reimbursementDate.value,
+            note: elements.reimbursementNote.value.trim()
+          }, state);
+          const reimbursementId = makeId("reimbursement");
+          const now = (/* @__PURE__ */ new Date()).toISOString();
+          const incomeCategory = currentCategories().find((item) => item.kind === "income") || currentCategories()[0];
+          const expenseCategory = currentCategories().find((item) => item.kind === "expense") || currentCategories()[0];
+          const receipt = {
+            ...plannedTransaction({
+              type: "income",
+              amount: values.receiptAmount,
+              categoryId: incomeCategory.id,
+              accountId: values.accountId,
+              date: values.date,
+              note: values.note || `\u62A5\u9500\u5230\u8D26\uFF1A${sources.length}\u7B14`,
+              currencyCode: values.currencyCode,
+              exchangeRate: values.exchangeRate
+            }),
+            reimbursementId,
+            relationGroupId: reimbursementId,
+            generatedBy: { kind: "reimbursement", reimbursementId },
+            reimburseStatus: "receipt",
+            budgetIncluded: false,
+            createdAt: now,
+            updatedAt: now
+          };
+          let differenceTransaction = null;
+          if (values.differenceAmount > 0) {
+            differenceTransaction = {
+              ...plannedTransaction({
+                type: values.differenceType,
+                amount: values.differenceAmount,
+                categoryId: values.differenceType === "income" ? incomeCategory.id : expenseCategory.id,
+                accountId: values.accountId,
+                date: values.date,
+                note: `\u62A5\u9500\u5DEE\u989D\uFF1A${values.note || `${sources.length}\u7B14`}`,
+                currencyCode: values.currencyCode,
+                exchangeRate: values.exchangeRate
+              }),
+              reimbursementId,
+              relationGroupId: reimbursementId,
+              generatedBy: { kind: "reimbursement-difference", reimbursementId },
+              createdAt: now,
+              updatedAt: now
+            };
+          }
+          state.reimbursements.push({
+            id: reimbursementId,
+            ...values,
+            transactionId: receipt.id,
+            differenceTransactionId: differenceTransaction?.id || null,
+            deletedAt: null,
+            createdAt: now
+          });
+          state.transactions.push(receipt, ...differenceTransaction ? [differenceTransaction] : []);
+          sources.forEach((source) => {
+            source.reimburseStatus = "reimbursed";
+            source.reimbursementId = reimbursementId;
+            source.relationGroupId = reimbursementId;
+            source.linkedTransactionId = receipt.id;
+            source.updatedAt = now;
+          });
+          elements.reimbursementDialog.close();
+          const differenceText = values.differenceAmount > 0 ? `\uFF0C\u5DEE\u989D ${formatMoney(values.differenceAmount * values.exchangeRate)} \u5DF2\u8BB0\u4E3A${values.differenceType === "income" ? "\u6536\u5165" : "\u652F\u51FA"}` : "";
+          saveState(`\u62A5\u9500\u5230\u8D26\u5DF2\u5173\u8054${differenceText}`);
+        } catch (error) {
+          showToast(error.message, true);
+        }
+      });
+      elements.batchReimbursement.addEventListener("click", () => {
+        const ids = [...elements.reimbursementList.querySelectorAll("input:checked")].map((item) => item.value);
+        if (!ids.length) return showToast("\u8BF7\u5148\u9009\u62E9\u5F85\u62A5\u9500\u660E\u7EC6", true);
+        openReimbursementDialog(ids);
+      });
+      elements.settlementForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        try {
+          const sourceIds = JSON.parse(elements.settlementTransactionId.value);
+          const sources = sourceIds.map((id) => state.transactions.find((item) => item.id === id)).filter(Boolean);
+          const source = sources[0];
+          const values = validateSettlement({
+            sourceTransactionIds: sourceIds,
+            accountId: elements.settlementAccount.value,
+            amount: Number(elements.settlementAmount.value),
+            date: elements.settlementDate.value,
+            note: elements.settlementNote.value.trim()
+          }, state);
+          const category = currentCategories().find((item) => item.kind === values.transactionType) || currentCategories()[0];
+          const transaction = plannedTransaction({
+            type: values.transactionType,
+            amount: values.amount,
+            categoryId: category.id,
+            accountId: values.accountId,
+            date: values.date,
+            note: values.note || `${source.type === "receivable" ? "\u5E94\u6536\u5230\u8D26" : "\u5E94\u4ED8\u4ED8\u6B3E"}\uFF1A${sources.length > 1 ? `${sources.length}\u7B14\u5408\u5E76` : source.note || categoryById(source.categoryId).name}`,
+            linkedTransactionId: sources.length === 1 ? source.id : null,
+            currencyCode: values.currencyCode,
+            exchangeRate: values.exchangeRate
+          });
+          const settlement = {
+            id: makeId("settlement"),
+            sourceTransactionIds: values.sourceTransactionIds,
+            transactionId: transaction.id,
+            amount: values.amount,
+            allocations: values.allocations,
+            date: values.date,
+            deletedAt: null,
+            createdAt: (/* @__PURE__ */ new Date()).toISOString()
+          };
+          transaction.settlementId = settlement.id;
+          transaction.relationGroupId = settlement.id;
+          state.settlements.push(settlement);
+          state.transactions.push(transaction);
+          sources.forEach((item) => {
+            if (roundMoney(remainingSettlementAmount(state, item.id)) === 0) item.status = "posted";
+            item.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+          });
+          elements.settlementDialog.close();
+          saveState(sources.every((item) => item.status === "posted") ? "\u7ED3\u7B97\u5B8C\u6210\uFF0C\u5DF2\u751F\u6210\u6B63\u5F0F\u6536\u652F\u660E\u7EC6" : "\u90E8\u5206\u7ED3\u7B97\u5DF2\u4FDD\u5B58");
+        } catch (error) {
+          showToast(error.message, true);
+        }
+      });
+      elements.batchSettlement.addEventListener("click", () => {
+        const ids = [...elements.pendingSettlementList.querySelectorAll("input:checked")].map((item) => item.value);
+        if (!ids.length) return showToast("\u8BF7\u5148\u9009\u62E9\u8981\u7ED3\u7B97\u7684\u5E94\u6536\u6216\u5E94\u4ED8\u660E\u7EC6", true);
+        openSettlementDialog(ids);
       });
       elements.statsMonth.addEventListener("change", renderStats);
       elements.searchForm.addEventListener("submit", (event) => event.preventDefault());
@@ -2540,10 +3781,33 @@
         const action = button.dataset.planAction;
         const budgetId = event.target.closest("[data-budget-id]")?.dataset.budgetId;
         const goalId = event.target.closest("[data-goal-id]")?.dataset.goalId;
+        const savingsPlanId = event.target.closest("[data-savings-plan-id]")?.dataset.savingsPlanId;
         const scheduleId = event.target.closest("[data-schedule-id]")?.dataset.scheduleId;
         const installmentId = event.target.closest("[data-installment-id]")?.dataset.installmentId;
-        const reimbursementId = event.target.closest("[data-reimbursement-id]")?.dataset.reimbursementId;
-        if (action === "delete-budget") {
+        if (action === "deposit-savings") {
+          openSavingsDepositDialog(savingsPlanId);
+        } else if (action === "pause-savings") {
+          const plan = state.savingsPlans.find((item) => item.id === savingsPlanId && !item.deletedAt);
+          if (!plan) return;
+          plan.status = "paused";
+          saveState("\u5B58\u94B1\u8BA1\u5212\u5DF2\u6682\u505C");
+        } else if (action === "resume-savings") {
+          const plan = state.savingsPlans.find((item) => item.id === savingsPlanId && !item.deletedAt);
+          if (!plan) return;
+          plan.status = "active";
+          saveState("\u5B58\u94B1\u8BA1\u5212\u5DF2\u7EE7\u7EED");
+        } else if (action === "delete-savings") {
+          const plan = state.savingsPlans.find((item) => item.id === savingsPlanId && !item.deletedAt);
+          if (!plan || !window.confirm("\u5220\u9664\u8BA1\u5212\u4E0D\u4F1A\u5220\u9664\u5DF2\u7ECF\u4EA7\u751F\u7684\u8F6C\u8D26\u8BB0\u5F55\u3002\u786E\u5B9A\u7EE7\u7EED\u5417\uFF1F")) return;
+          plan.deletedAt = (/* @__PURE__ */ new Date()).toISOString();
+          state.recycleBin.push({
+            id: makeId("trash"),
+            entityType: "savings-plan",
+            deletedAt: plan.deletedAt,
+            payload: structuredClone(plan)
+          });
+          saveState("\u5B58\u94B1\u8BA1\u5212\u5DF2\u79FB\u5165\u56DE\u6536\u7AD9\uFF0C\u5386\u53F2\u8F6C\u8D26\u4FDD\u7559");
+        } else if (action === "delete-budget") {
           state.budgets = state.budgets.filter((item) => item.id !== budgetId);
           saveState("\u5206\u7C7B\u9884\u7B97\u5DF2\u5220\u9664");
         } else if (action === "delete-goal") {
@@ -2588,26 +3852,6 @@
           plan.paidPeriods += 1;
           if (plan.paidPeriods < plan.periods) plan.nextDate = advanceRecurringDate(plan.nextDate, "monthly");
           saveState("\u672C\u671F\u5206\u671F\u5DF2\u8BB0\u5165");
-        } else if (action === "settle-reimbursement") {
-          const expense = state.transactions.find((item) => item.id === reimbursementId);
-          if (!expense || expense.reimburseStatus !== "pending") return;
-          const incomeCategory = currentCategories().find((item) => item.kind === "income") || currentCategories()[0];
-          const income = plannedTransaction({
-            type: "income",
-            amount: expense.amount,
-            categoryId: incomeCategory.id,
-            accountId: expense.accountId,
-            date: localDate(),
-            note: `\u62A5\u9500\u5230\u8D26\uFF1A${expense.note || categoryById(expense.categoryId).name}`,
-            linkedTransactionId: expense.id,
-            currencyCode: expense.currencyCode,
-            exchangeRate: expense.exchangeRate
-          });
-          expense.reimburseStatus = "reimbursed";
-          expense.linkedTransactionId = income.id;
-          expense.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
-          state.transactions.push(income);
-          saveState("\u62A5\u9500\u6536\u5165\u5DF2\u5173\u8054\u5230\u8D26");
         }
       });
       elements.activeBookSelect.addEventListener("change", () => {
@@ -2682,11 +3926,15 @@
           const deletedAt = (/* @__PURE__ */ new Date()).toISOString();
           const categories = state.categories.filter((candidate) => candidate.bookId === book.id);
           const transactions = state.transactions.filter((candidate) => candidate.bookId === book.id);
-          const scopedNames = ["members", "tags", "merchants", "budgets", "schedules", "installments", "templates"];
+          const transactionIds = new Set(transactions.map((candidate) => candidate.id));
+          const scopedNames = ["members", "tags", "merchants", "budgets", "schedules", "installments", "savingsPlans", "templates"];
           const scoped = Object.fromEntries(scopedNames.map((name) => [
             name,
             state[name].filter((candidate) => candidate.bookId === book.id)
           ]));
+          scoped.refunds = state.refunds.filter((candidate) => transactionIds.has(candidate.transactionId));
+          scoped.settlements = state.settlements.filter((candidate) => transactionIds.has(candidate.transactionId) || candidate.sourceTransactionIds.some((id) => transactionIds.has(id)));
+          scoped.reimbursements = state.reimbursements.filter((candidate) => transactionIds.has(candidate.transactionId) || candidate.sourceTransactionIds.some((id) => transactionIds.has(id)));
           state.recycleBin.push({
             id: makeId("trash"),
             entityType: "book",
@@ -2699,6 +3947,9 @@
           scopedNames.forEach((name) => {
             state[name] = state[name].filter((candidate) => candidate.bookId !== book.id);
           });
+          state.refunds = state.refunds.filter((candidate) => !scoped.refunds.some((item2) => item2.id === candidate.id));
+          state.settlements = state.settlements.filter((candidate) => !scoped.settlements.some((item2) => item2.id === candidate.id));
+          state.reimbursements = state.reimbursements.filter((candidate) => !scoped.reimbursements.some((item2) => item2.id === candidate.id));
           if (state.activeBookId === book.id) state.activeBookId = state.books.find((candidate) => !candidate.hidden).id;
           resetTransactionForm();
           saveState("\u8D26\u672C\u5DF2\u79FB\u5165\u56DE\u6536\u7AD9");
@@ -2748,13 +3999,16 @@
       elements.accountForm.addEventListener("submit", (event) => {
         event.preventDefault();
         const name = elements.newAccountName.value.trim();
-        if (state.accounts.some((item) => item.name === name)) {
+        if (state.accounts.some((item) => !item.deletedAt && item.name === name)) {
           showToast("\u8D26\u6237\u540D\u79F0\u5DF2\u5B58\u5728", true);
           return;
         }
+        const bookIds = [...elements.newAccountBooks.querySelectorAll("input:checked")].map((item) => item.value);
+        if (!bookIds.length) return showToast("\u8BF7\u81F3\u5C11\u9009\u62E9\u4E00\u4E2A\u9002\u7528\u8D26\u672C", true);
         state.accounts.push({
           id: makeId("acc"),
           name,
+          bookIds,
           type: elements.newAccountType.value,
           initialBalance: Number(elements.newAccountBalance.value) || 0,
           currencyCode: elements.newAccountCurrency.value,
@@ -2764,8 +4018,16 @@
           credit: elements.newAccountType.value === "credit" ? {
             limit: Math.max(0, Number(elements.newAccountCreditLimit.value) || 0),
             billingDay: Number(elements.newAccountBillingDay.value) || null,
-            repaymentDay: Number(elements.newAccountRepaymentDay.value) || null
+            billingDayInNextCycle: elements.newAccountBillingDayNext.checked,
+            repaymentType: elements.newAccountRepaymentType.value,
+            repaymentDay: Number(elements.newAccountRepaymentDay.value) || null,
+            repaymentDelayDays: Number(elements.newAccountRepaymentDelay.value) || null,
+            sharedLimitAccountId: elements.newAccountSharedLimit.value || null,
+            repaymentReminderDays: []
           } : null,
+          expiresAt: null,
+          expiryReminderEnabled: false,
+          balanceReminder: null,
           deletedAt: null
         });
         elements.accountForm.reset();
@@ -2775,6 +4037,13 @@
       });
       elements.newAccountType.addEventListener("change", () => {
         elements.accountCreditFields.classList.toggle("is-hidden", elements.newAccountType.value !== "credit");
+        elements.newAccountBalance.placeholder = elements.newAccountType.value === "credit" ? "\u5F53\u524D\u6B20\u6B3E" : "\u521D\u59CB\u4F59\u989D";
+      });
+      elements.newAccountCurrency.addEventListener("change", renderSelects);
+      elements.newAccountRepaymentType.addEventListener("change", () => {
+        const delay = elements.newAccountRepaymentType.value === "delay";
+        elements.newAccountRepaymentDay.classList.toggle("is-hidden", delay);
+        elements.newAccountRepaymentDelay.classList.toggle("is-hidden", !delay);
       });
       elements.accountList.addEventListener("click", (event) => {
         const button = event.target.closest("[data-account-id]");
@@ -2782,6 +4051,10 @@
         const id = button.dataset.accountId;
         const account = state.accounts.find((item) => item.id === id);
         if (!account) return;
+        if (button.dataset.accountAction === "statement") {
+          openCreditStatementDialog(account.id);
+          return;
+        }
         if (button.dataset.accountAction === "rename") {
           const name = window.prompt("\u8BF7\u8F93\u5165\u65B0\u7684\u8D26\u6237\u540D\u79F0", account.name)?.trim();
           if (!name || name === account.name) return;
@@ -2790,12 +4063,68 @@
           saveState("\u8D26\u6237\u5DF2\u91CD\u547D\u540D");
           return;
         }
-        if (state.accounts.length <= 1) return showToast("\u81F3\u5C11\u9700\u8981\u4FDD\u7559\u4E00\u4E2A\u8D26\u6237", true);
-        if (state.transactions.some((item) => item.accountId === id || item.targetAccountId === id)) {
-          return showToast("\u8BE5\u8D26\u6237\u5DF2\u6709\u8D26\u76EE\uFF0C\u4E0D\u80FD\u5220\u9664", true);
+        if (button.dataset.accountAction === "toggle-hidden") {
+          account.hidden = !account.hidden;
+          saveState(account.hidden ? "\u8D26\u6237\u5DF2\u9690\u85CF" : "\u8D26\u6237\u5DF2\u663E\u793A");
+          return;
         }
-        state.accounts = state.accounts.filter((item) => item.id !== id);
-        saveState("\u8D26\u6237\u5DF2\u5220\u9664");
+        if (button.dataset.accountAction === "balance") {
+          if (!accountAvailableInBook(account, state.activeBookId)) return showToast("\u8BE5\u8D26\u6237\u4E0D\u9002\u7528\u4E8E\u5F53\u524D\u8D26\u672C", true);
+          const rate = currencyByCode(account.currencyCode).rate || 1;
+          const currentBalance = roundMoney((accountBalances()[account.id] || 0) / rate);
+          const actualBalance = Number(window.prompt(`\u5F53\u524D\u8D26\u9762\u4F59\u989D ${currentBalance}\uFF0C\u8BF7\u8F93\u5165\u5B9E\u9645\u4F59\u989D`, String(currentBalance)));
+          if (!Number.isFinite(actualBalance) || actualBalance === currentBalance) return;
+          const difference = roundMoney(actualBalance - currentBalance);
+          const type = difference > 0 ? "income" : "expense";
+          const category = currentCategories().find((item) => item.kind === type) || currentCategories()[0];
+          state.transactions.push({
+            id: makeId("tx"),
+            ...plannedTransaction({
+              type,
+              amount: Math.abs(difference),
+              categoryId: category.id,
+              accountId: account.id,
+              date: localDate(),
+              note: `\u4F59\u989D\u8C03\u6574\uFF1A${account.name}`,
+              currencyCode: account.currencyCode,
+              exchangeRate: rate
+            }),
+            adjustment: { previousBalance: currentBalance, actualBalance },
+            createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+            updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+          });
+          saveState("\u4F59\u989D\u5DEE\u989D\u5DF2\u8865\u8BB0\u4E3A\u6536\u652F");
+          return;
+        }
+        if (button.dataset.accountAction === "reconcile") {
+          const transactions = currentTransactions().filter((item) => item.accountId === id || item.targetAccountId === id);
+          if (!transactions.length) return showToast("\u5F53\u524D\u8D26\u672C\u6CA1\u6709\u9700\u8981\u6838\u5BF9\u7684\u660E\u7EC6");
+          const markAsReconciled = transactions.some((item) => !item.reconciled);
+          const actionText = markAsReconciled ? "\u5168\u90E8\u6807\u8BB0\u4E3A\u5DF2\u6838\u5BF9" : "\u5168\u90E8\u6807\u8BB0\u4E3A\u672A\u6838\u5BF9";
+          if (!window.confirm(`\u786E\u5B9A${actionText}\u5417\uFF1F`)) return;
+          transactions.forEach((item) => {
+            item.reconciled = markAsReconciled;
+            item.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+          });
+          saveState(`${transactions.length} \u7B14\u660E\u7EC6\u5DF2${markAsReconciled ? "\u6838\u5BF9" : "\u53D6\u6D88\u6838\u5BF9"}`);
+          return;
+        }
+        if (button.dataset.accountAction !== "delete") return;
+        const activeSavingsPlan = state.savingsPlans.find((plan) => !plan.deletedAt && !savingsPlanProgress(state, plan).complete && (plan.sourceAccountId === id || plan.targetAccountId === id));
+        if (activeSavingsPlan) return showToast(`\u8D26\u6237\u6B63\u7528\u4E8E\u201C${activeSavingsPlan.name}\u201D\uFF0C\u8BF7\u5148\u5B8C\u6210\u6216\u5220\u9664\u8BA1\u5212`, true);
+        const remainingAccounts = availableAccounts(state.activeBookId, { includeHidden: true }).filter((item) => item.id !== id);
+        if (!remainingAccounts.length) return showToast("\u5F53\u524D\u8D26\u672C\u81F3\u5C11\u9700\u8981\u4FDD\u7559\u4E00\u4E2A\u8D26\u6237", true);
+        const referenced = state.transactions.some((item) => !item.deletedAt && (item.accountId === id || item.targetAccountId === id));
+        const message = referenced ? "\u5220\u9664\u8D26\u6237\u4E0D\u4F1A\u5220\u9664\u5DF2\u6709\u660E\u7EC6\uFF0C\u4F46\u8BE5\u8D26\u6237\u5C06\u4E0D\u80FD\u7EE7\u7EED\u8BB0\u8D26\u3002\u4E3A\u4FDD\u6301\u5386\u53F2\u8D44\u4EA7\u7EDF\u8BA1\uFF0C\u901A\u5E38\u5EFA\u8BAE\u6539\u7528\u9690\u85CF\u3002\u786E\u5B9A\u5220\u9664\u5417\uFF1F" : "\u786E\u5B9A\u5220\u9664\u8BE5\u8D26\u6237\u5417\uFF1F";
+        if (!window.confirm(message)) return;
+        account.deletedAt = (/* @__PURE__ */ new Date()).toISOString();
+        state.recycleBin.push({
+          id: makeId("trash"),
+          entityType: "account",
+          deletedAt: account.deletedAt,
+          payload: structuredClone(account)
+        });
+        saveState("\u8D26\u6237\u5DF2\u79FB\u5165\u56DE\u6536\u7AD9\uFF0C\u5386\u53F2\u660E\u7EC6\u5DF2\u4FDD\u7559");
       });
       elements.memberForm.addEventListener("submit", (event) => {
         event.preventDefault();
@@ -2908,6 +4237,8 @@
         elements.lockDialog.close();
         elements.unlockPin.value = "";
         elements.lockError.textContent = "";
+        refreshAutoBookingCandidates({ showPrompt: true }).catch(() => {
+        });
       });
       elements.lockDialog.addEventListener("cancel", (event) => event.preventDefault());
       document.addEventListener("visibilitychange", () => {
@@ -2932,10 +4263,7 @@
       });
       elements.loadNotificationCandidates.addEventListener("click", async () => {
         try {
-          const result = await loadNotificationCandidates();
-          autoBookingCandidates = [...autoBookingCandidates, ...result.items || []].filter((item, index, list) => list.findIndex((candidate) => candidate.id === item.id) === index);
-          renderAutoBookingCandidates();
-          await refreshAutoBookingStatus();
+          await refreshAutoBookingCandidates({ showPrompt: true });
         } catch (error) {
           showToast(error.message || "\u901A\u77E5\u5019\u9009\u8BFB\u53D6\u5931\u8D25", true);
         }
@@ -2943,8 +4271,7 @@
       elements.loadSmsCandidates.addEventListener("click", async () => {
         try {
           const result = await loadSmsCandidates();
-          autoBookingCandidates = [...autoBookingCandidates, ...result.items || []].filter((item, index, list) => list.findIndex((candidate) => candidate.id === item.id) === index);
-          renderAutoBookingCandidates();
+          mergeAutoBookingCandidates(result.items || []);
           await refreshAutoBookingStatus();
         } catch (error) {
           showToast(error.message || "\u77ED\u4FE1\u5019\u9009\u8BFB\u53D6\u5931\u8D25", true);
@@ -2956,11 +4283,8 @@
         if (!button || !row) return;
         const candidate = autoBookingCandidates.find((item) => item.id === row.dataset.candidateId);
         if (!candidate) return;
-        if (button.dataset.candidateAction === "parse") openParseDialog(candidate.text);
-        else {
-          autoBookingCandidates = autoBookingCandidates.filter((item) => item.id !== candidate.id);
-          renderAutoBookingCandidates();
-        }
+        if (button.dataset.candidateAction === "parse") openAutoBookingCandidate(candidate);
+        else finishAutoBookingCandidate(candidate.id, "dismissed");
       });
       elements.testSyncButton.addEventListener("click", () => runSyncAction(elements.testSyncButton, async () => {
         const config = getSyncConfig();
@@ -3052,6 +4376,9 @@
         const item = state.recycleBin.find((candidate) => candidate.id === row.dataset.trashId);
         if (!item) return;
         if (button.dataset.trashAction === "delete") {
+          if (item.entityType === "savings-plan") {
+            state.savingsPlans = state.savingsPlans.filter((plan) => plan.id !== item.payload?.id);
+          }
           state.recycleBin = state.recycleBin.filter((candidate) => candidate.id !== item.id);
           saveState("\u5DF2\u5F7B\u5E95\u5220\u9664");
           return;
@@ -3060,8 +4387,63 @@
           const transaction = item.payload;
           if (!state.books.some((book) => book.id === transaction.bookId)) return showToast("\u539F\u8D26\u672C\u4E0D\u5B58\u5728\uFF0C\u65E0\u6CD5\u6062\u590D\u8BE5\u8D26\u76EE", true);
           if (!state.accounts.some((account) => account.id === transaction.accountId)) return showToast("\u539F\u8D26\u6237\u4E0D\u5B58\u5728\uFF0C\u65E0\u6CD5\u6062\u590D\u8BE5\u8D26\u76EE", true);
+          if (transaction.targetAccountId && !state.accounts.some((account) => account.id === transaction.targetAccountId)) {
+            return showToast("\u539F\u8F6C\u5165\u8D26\u6237\u4E0D\u5B58\u5728\uFF0C\u65E0\u6CD5\u6062\u590D\u8BE5\u8D26\u76EE", true);
+          }
           state.transactions.push(transaction);
+          if (transaction.settlementId) {
+            const settlement = state.settlements.find((candidate) => candidate.id === transaction.settlementId);
+            if (settlement) {
+              settlement.deletedAt = null;
+              settlement.sourceTransactionIds.forEach((sourceId) => {
+                const source = state.transactions.find((candidate) => candidate.id === sourceId);
+                if (source && remainingSettlementAmount(state, sourceId) === 0) source.status = "posted";
+              });
+            }
+          }
           state.activeBookId = transaction.bookId;
+        } else if (item.entityType === "reimbursement") {
+          const payload = item.payload;
+          const reimbursement = payload?.reimbursement;
+          const generatedTransactions = payload?.transactions || [];
+          if (!reimbursement || !generatedTransactions.length) return showToast("\u62A5\u9500\u6062\u590D\u6570\u636E\u4E0D\u5B8C\u6574", true);
+          const sources = reimbursement.sourceTransactionIds.map((id) => state.transactions.find((transaction) => transaction.id === id));
+          if (sources.some((source) => !source)) return showToast("\u539F\u5F85\u62A5\u9500\u660E\u7EC6\u4E0D\u5B58\u5728\uFF0C\u65E0\u6CD5\u6062\u590D", true);
+          if (generatedTransactions.some((transaction) => !state.books.some((book) => book.id === transaction.bookId))) {
+            return showToast("\u539F\u8D26\u672C\u4E0D\u5B58\u5728\uFF0C\u65E0\u6CD5\u6062\u590D\u62A5\u9500", true);
+          }
+          if (generatedTransactions.some((transaction) => !state.accounts.some((account) => account.id === transaction.accountId))) {
+            return showToast("\u539F\u5230\u8D26\u8D26\u6237\u4E0D\u5B58\u5728\uFF0C\u65E0\u6CD5\u6062\u590D\u62A5\u9500", true);
+          }
+          const stored = state.reimbursements.find((candidate) => candidate.id === reimbursement.id);
+          if (stored) Object.assign(stored, reimbursement, { deletedAt: null });
+          else state.reimbursements.push({ ...reimbursement, deletedAt: null });
+          generatedTransactions.forEach((transaction) => {
+            if (!state.transactions.some((candidate) => candidate.id === transaction.id)) state.transactions.push(transaction);
+          });
+          sources.forEach((source) => {
+            source.reimburseStatus = "reimbursed";
+            source.reimbursementId = reimbursement.id;
+            source.relationGroupId = reimbursement.id;
+            source.linkedTransactionId = reimbursement.transactionId;
+            source.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+          });
+          state.activeBookId = generatedTransactions[0].bookId;
+        } else if (item.entityType === "savings-plan") {
+          const plan = item.payload;
+          if (!plan || !state.books.some((book) => book.id === plan.bookId)) return showToast("\u539F\u8D26\u672C\u4E0D\u5B58\u5728\uFF0C\u65E0\u6CD5\u6062\u590D\u8BA1\u5212", true);
+          if (![plan.sourceAccountId, plan.targetAccountId].every((id) => state.accounts.some((account) => account.id === id && !account.deletedAt))) {
+            return showToast("\u8BA1\u5212\u5173\u8054\u8D26\u6237\u4E0D\u5B58\u5728\uFF0C\u65E0\u6CD5\u6062\u590D", true);
+          }
+          const stored = state.savingsPlans.find((candidate) => candidate.id === plan.id);
+          if (stored) Object.assign(stored, plan, { deletedAt: null });
+          else state.savingsPlans.push({ ...plan, deletedAt: null });
+          state.activeBookId = plan.bookId;
+        } else if (item.entityType === "account") {
+          const account = state.accounts.find((candidate) => candidate.id === item.payload?.id);
+          if (!account) return showToast("\u8D26\u6237\u6570\u636E\u4E0D\u5B58\u5728\uFF0C\u65E0\u6CD5\u6062\u590D", true);
+          account.deletedAt = null;
+          account.hidden = false;
         } else if (item.entityType === "book") {
           const payload = item.payload;
           if (!payload?.book || state.books.some((book) => book.id === payload.book.id)) return showToast("\u8D26\u672C\u65E0\u6CD5\u6062\u590D\u6216\u5DF2\u7ECF\u5B58\u5728", true);
@@ -3093,7 +4475,11 @@
         });
       }).catch(() => {
       });
-      App.addListener("resume", lockAfterBackgroundIfNeeded).catch(() => {
+      App.addListener("resume", () => {
+        lockAfterBackgroundIfNeeded();
+        if (!elements.lockDialog.open) refreshAutoBookingCandidates({ showPrompt: true }).catch(() => {
+        });
+      }).catch(() => {
       });
       App.addListener("appUrlOpen", ({ url }) => {
         if (url?.startsWith("zhiji://record")) switchView("record");
@@ -3105,6 +4491,7 @@
       });
       App.addListener("backButton", () => {
         if (elements.parseDialog.open) {
+          currentAutoBookingCandidateId = null;
           elements.parseDialog.close();
           return;
         }
@@ -3122,6 +4509,8 @@
       elements.transactionTime.value = (/* @__PURE__ */ new Date()).toTimeString().slice(0, 5);
       elements.scheduleNextDate.value = localDate();
       elements.installmentNextDate.value = localDate();
+      elements.savingsPlanStartDate.value = localDate();
+      elements.savingsDepositDate.value = localDate();
       elements.statsMonth.value = monthKey();
       loadSyncConfig();
       bindEvents();
@@ -3134,6 +4523,8 @@
       refreshAutoBookingStatus();
       syncLedgerWidget();
       showAppLock();
+      if (!elements.lockDialog.open) refreshAutoBookingCandidates({ showPrompt: true }).catch(() => {
+      });
     }
     document.addEventListener("DOMContentLoaded", init);
   })();
