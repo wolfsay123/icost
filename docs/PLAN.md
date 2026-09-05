@@ -1,6 +1,6 @@
 # 智记 Android 本地版功能对齐计划
 
-更新日期：2026-08-18
+更新日期：2026-09-05
 
 ## 北极星
 
@@ -22,6 +22,12 @@
 | 自动测试 | `npm run check` 为 29/29；Android 自动候选解析为 5/5；新版 UI 在 375x812、412x915、1440x1000 完成首页、抽屉、账户、报表、设置和记账链路 | `tests/`、`docs/screenshots/acceptance-v8-home-mobile.png` |
 | 坚果云 | 本地模拟 WebDAV 已闭环；真实坚果云账号和跨设备恢复未验 | `docs/ACCEPTANCE.md` |
 | Android | Debug APK 已构建验签；系统能力和目标 APK 均未完成真机动态对照 | `docs/ANDROID.md` |
+
+## 开源逻辑基线
+
+- 已固定审计 MoneyBook、MyExpenses、Cashew 和 AutoAccounting 的具体提交、根许可证、关键领域实现与测试证据，详见 `docs/OPEN_SOURCE_REFERENCE.md`。
+- 逻辑吸收采用独立实现：优先强化金额精度、交易不变量、周期幂等、自动候选证据链和 WebDAV 恢复保护，不整体移植任一第三方 App。
+- v6 分批方案、兼容策略和验收标准见 `docs/LOGIC_MIGRATION.md`；本次审计未改变 v5 数据或 APK 行为。
 
 ## 关键角色与路径
 
