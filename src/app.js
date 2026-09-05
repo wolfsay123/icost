@@ -169,6 +169,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
   let transactionPhotos = [];
   let transactionLocation = null;
   let activeViewName = "home";
+  let activeRecordMode = "manual";
   let activeSettingsView = "ledger";
   let editingRefundId = null;
 
@@ -1117,6 +1118,19 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     });
   }
 
+  function switchRecordMode(mode = "manual") {
+    const target = mode === "quick" ? "quick" : "manual";
+    activeRecordMode = target;
+    document.querySelectorAll("[data-record-mode]").forEach((button) => {
+      const active = button.dataset.recordMode === target;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-selected", String(active));
+    });
+    document.querySelectorAll("[data-record-panel]").forEach((panel) => {
+      panel.classList.toggle("is-hidden", panel.dataset.recordPanel !== target);
+    });
+  }
+
   function navigateWithControl(control) {
     if (control.dataset.settingsPanel) switchSettingsView(control.dataset.settingsPanel);
     switchView(control.dataset.view || control.dataset.viewLink);
@@ -1133,6 +1147,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     document.querySelectorAll(".view").forEach((view) => view.classList.toggle("is-active", view.id === `view-${target}`));
     document.querySelectorAll(".bottom-nav .nav-item").forEach((item) => item.classList.toggle("is-active", item.dataset.view === target));
     elements.viewTitle.textContent = VIEW_TITLES[target];
+    if (target === "record") switchRecordMode("manual");
     window.scrollTo({ top: 0, behavior: "auto" });
   }
 
@@ -1188,6 +1203,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     elements.transactionLocationStatus.textContent = "未记录位置";
     elements.recordFormTitle.textContent = "记录一笔账";
     elements.cancelEditButton.classList.add("is-hidden");
+    elements.recordAdvanced.removeAttribute("open");
     updateTransferFields("transaction");
   }
 
@@ -1575,7 +1591,6 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       updatedAt: now
     });
     elements.quickRecordInput.value = "";
-    elements.recordPageQuickInput.value = "";
     elements.parseDialog.close();
     if (candidateId) finishAutoBookingCandidate(candidateId, "confirmed");
     currentAutoBookingCandidateId = null;
@@ -2013,6 +2028,9 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     document.querySelectorAll("[data-settings-tab]").forEach((button) => {
       button.addEventListener("click", () => switchSettingsView(button.dataset.settingsTab));
     });
+    document.querySelectorAll("[data-record-mode]").forEach((button) => {
+      button.addEventListener("click", () => switchRecordMode(button.dataset.recordMode));
+    });
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && document.body.classList.contains("is-drawer-open")) closeDrawer();
     });
@@ -2021,12 +2039,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       event.preventDefault();
       openParseDialog(elements.quickRecordInput.value);
     });
-    elements.recordPageQuickForm.addEventListener("submit", (event) => {
-      event.preventDefault();
-      openParseDialog(elements.recordPageQuickInput.value);
-    });
     elements.voiceRecordButton.addEventListener("click", () => runVoiceInput(elements.voiceRecordButton, elements.quickRecordInput));
-    elements.recordPageVoiceButton.addEventListener("click", () => runVoiceInput(elements.recordPageVoiceButton, elements.recordPageQuickInput));
     elements.parseConfirmForm.addEventListener("submit", (event) => {
       event.preventDefault();
       if (event.submitter?.value === "cancel") {

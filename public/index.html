@@ -2,7 +2,7 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#173d37" />
     <meta name="description" content="智记本地记账与坚果云加密同步" />
     <title>智记 · 本地记账</title>
@@ -102,7 +102,12 @@
         </section>
 
         <section class="view" id="view-record" aria-labelledby="view-title">
-          <section class="quick-capture-panel">
+          <div class="record-mode-tabs" role="tablist" aria-label="记账方式">
+            <button class="is-active" id="record-mode-manual" data-record-mode="manual" type="button" role="tab" aria-selected="true" aria-controls="record-manual-panel"><i data-lucide="pencil"></i><span>手动记账</span></button>
+            <button id="record-mode-quick" data-record-mode="quick" type="button" role="tab" aria-selected="false" aria-controls="record-quick-panel"><i data-lucide="sparkles"></i><span>一句话记账</span></button>
+          </div>
+
+          <section class="quick-capture-panel record-mode-panel is-hidden" id="record-quick-panel" data-record-panel="quick" role="tabpanel" aria-labelledby="record-mode-quick">
             <div class="quick-capture-heading">
               <span class="quick-capture-icon"><i data-lucide="sparkles"></i></span>
               <div><strong>一句话记账</strong><small>金额、分类、账户和日期在本机识别</small></div>
@@ -117,11 +122,12 @@
               </div>
             </form>
           </section>
-          <div class="record-layout">
+
+          <div class="record-layout record-mode-panel" id="record-manual-panel" data-record-panel="manual" role="tabpanel" aria-labelledby="record-mode-manual">
             <section class="panel manual-panel">
               <div class="section-heading">
                 <div>
-                  <p class="eyebrow">手动录入</p>
+                  <p class="eyebrow">当前账本</p>
                   <h2 id="record-form-title">记录一笔账</h2>
                 </div>
                 <button class="text-button is-hidden" id="cancel-edit-button" type="button">取消编辑</button>
@@ -129,7 +135,13 @@
 
               <form id="transaction-form" class="form-grid">
                 <input id="transaction-id" type="hidden" />
-                <fieldset class="type-switch extended full-width">
+                <label class="field full-width amount-field">
+                  <span>金额</span>
+                  <span class="amount-input-wrap"><b>¥</b><input id="transaction-amount" type="number" min="0.01" step="0.01" inputmode="decimal" required placeholder="0.00" /></span>
+                </label>
+
+                <div class="record-field-heading full-width"><strong>业务类型</strong><small>选择这笔资金的方向</small></div>
+                <fieldset class="type-switch record-type-grid full-width">
                   <legend class="sr-only">业务类型</legend>
                   <label><input type="radio" name="type" value="expense" checked /><span>支出</span></label>
                   <label><input type="radio" name="type" value="income" /><span>收入</span></label>
@@ -142,10 +154,6 @@
                   <label><input type="radio" name="type" value="receivable" /><span>应收</span></label>
                 </fieldset>
 
-                <label class="field full-width amount-field">
-                  <span>金额</span>
-                  <span class="amount-input-wrap"><b>¥</b><input id="transaction-amount" type="number" min="0.01" step="0.01" inputmode="decimal" required placeholder="0.00" /></span>
-                </label>
                 <label class="field">
                   <span>分类</span>
                   <select id="transaction-category" required></select>
@@ -167,7 +175,7 @@
                   <input id="transaction-note" type="text" maxlength="80" placeholder="可选，例如：团队午餐" />
                 </label>
 
-                <details class="record-advanced full-width">
+                <details class="record-advanced full-width" id="record-advanced">
                   <summary><span>更多选项</span><small>币种、报销、成员、标签和附件</small><i data-lucide="chevron-right"></i></summary>
                   <div class="record-advanced-grid">
                     <label class="field"><span>币种</span><select id="transaction-currency"></select></label>
@@ -188,24 +196,11 @@
             </section>
 
             <aside class="record-aside">
-              <section class="panel">
-                <div class="section-heading compact">
-                  <div><p class="eyebrow">快速开始</p><h2>一句话记账</h2></div>
-                </div>
-                <form id="record-page-quick-form">
-                  <label class="sr-only" for="record-page-quick-input">描述一笔收支</label>
-                  <textarea id="record-page-quick-input" rows="4" placeholder="工资到账 12000 元，存入招商银行"></textarea>
-                  <div class="record-quick-actions"><button class="secondary-button" id="record-page-voice-button" type="button">语音输入</button><button class="secondary-button" type="submit">解析并确认</button></div>
-                </form>
-              </section>
-              <section class="panel">
-                <div class="section-heading compact"><div><p class="eyebrow">常用账目</p><h2>记账模板</h2></div></div>
-                <div class="plan-list template-list" id="template-list"></div>
-              </section>
-              <section class="record-tip">
-                <strong>数据只在本机</strong>
-                <p>保存后立即写入当前浏览器。建议定期在“设置与同步”中上传加密备份。</p>
-              </section>
+              <details class="record-support-disclosure">
+                <summary><span><i data-lucide="book-open"></i><span><strong>常用模板</strong><small>快速套用经常记录的账目</small></span></span><i data-lucide="chevron-right"></i></summary>
+                <div class="record-support-content"><div class="plan-list template-list" id="template-list"></div></div>
+              </details>
+              <div class="record-privacy-note"><i data-lucide="shield-check"></i><span><strong>数据只在本机</strong><small>定期在设置中上传加密备份</small></span></div>
             </aside>
           </div>
         </section>
