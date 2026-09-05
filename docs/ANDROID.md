@@ -5,10 +5,10 @@
 - 文件：`release/zhiji-android-debug.apk`
 - 应用名：智记
 - 包名：`com.zhiji.local`
-- 版本：`0.8.0`（versionCode 7）
+- 版本：`0.9.0`（versionCode 10）
 - 最低系统：Android 7.0（API 24）
-- 文件大小：11,689,523 bytes
-- SHA-256：`2e2accf646c80a8e52ec25fd53746e40b8cd96f08986454bd878c2a7794d950c`
+- 文件大小：11,769,820 bytes
+- SHA-256：`e91a23c24deabde854df5cdd2f99800cc2abd9b7e787aa78ea3aad524db75ad9`
 
 这是供个人试用的 Debug APK，使用 Android SDK 调试证书签名，不用于应用商店发布。升级时需继续使用同一签名；若手机上存在不同签名的同包名版本，应先备份数据再卸载旧版。
 
@@ -45,7 +45,7 @@ adb install -r release/zhiji-android-debug.apk
 4. 新增一笔测试账目，再点“从云端恢复”，确认回到上传时状态。
 5. 开启自动同步，新增账目后等待上传；再从另一设备制造较新修订，确认覆盖前出现冲突提示。
 
-恢复会覆盖当前设备数据。首次验收建议使用独立路径，如 `智记/测试/zhiji-backup.enc.json`。开启自动同步时，账号、应用密码和同步密钥由 Android Keystore 加密保存；关闭时只留在当前页面内存。
+恢复会覆盖当前设备数据。0.9.0 会先校验版本、记录数量和账本/账户/分类/交易关联，损坏或未来高版本备份不会替换本地账本。首次验收建议使用独立路径，如 `智记/测试/zhiji-backup.enc.json`。开启自动同步时，账号、应用密码和同步密钥由 Android Keystore 加密保存；关闭时只留在当前页面内存。
 
 ## 本机构建
 
@@ -65,7 +65,7 @@ Gradle 原始 APK 位于 `android/app/build/outputs/apk/debug/app-debug.apk`，�
 - Android Emulator 37.1.11 官方包：394,555,844 bytes，SHA-1 `f22f44948a2b7f0a0103645b9a639290eef92426`。
 - API 24 AOSP ARM64 官方镜像：305,854,153 bytes，SHA-1 `e88ebdf4533efa0370603ee4ab0e7834e0cc364f`。
 - 2026-08-18 下载多次被 Google 官方 CDN 限速至约 0.05-0.2 MB/s，组件尚未完整安装；本次没有模拟器安装/启动证据，不能把 APK 构建与浏览器测试表述为 Android 动态验收。
-- 当前 `adb devices` 未发现已授权设备，因此 0.8.0 尚未直接安装到用户手机，新版 UI 与微信/支付宝真实结果页识别仍待真机验证。
+- 当前 `adb devices` 未发现已授权设备，因此 0.9.0 尚未直接安装到用户手机；v5 到 v6 覆盖升级、坚果云真实恢复与微信/支付宝真实结果页识别仍待红米 K80 真机验证。
 
 网络恢复后可继续使用 SDK 管理器安装：
 

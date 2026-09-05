@@ -132,6 +132,7 @@ function transaction(id, type, amount, extras = {}) {
 test("全部资金型交易按业务语义更新账户余额", () => {
   const state = createDefaultLedger();
   state.accounts.find((item) => item.id === "acc-cash").initialBalance = 100;
+  state.accounts.find((item) => item.id === "acc-cash").initialBalanceMinor = 10000;
   state.transactions = [
     transaction("income", "income", 50),
     transaction("expense", "expense", 20),
@@ -184,6 +185,7 @@ test("多币种账目和账户初始余额统一换算为本位币", () => {
   state.currencies.push({ code: "USD", name: "美元", symbol: "$", rate: 7.2 });
   state.accounts.find((item) => item.id === "acc-cash").currencyCode = "USD";
   state.accounts.find((item) => item.id === "acc-cash").initialBalance = 10;
+  state.accounts.find((item) => item.id === "acc-cash").initialBalanceMinor = 1000;
   state.transactions = [
     transaction("usd-expense", "expense", 5, { currencyCode: "USD", exchangeRate: 7.2 }),
     transaction("usd-payable", "payable", 3, { currencyCode: "USD", exchangeRate: 7.2, status: "pending" }),
@@ -232,6 +234,7 @@ test("账户适用账本同时约束付款账户和转入账户", () => {
 test("部分退款累计不能超过原明细并冲减余额与收支", () => {
   const state = createDefaultLedger();
   state.accounts.find((item) => item.id === "acc-cash").initialBalance = 100;
+  state.accounts.find((item) => item.id === "acc-cash").initialBalanceMinor = 10000;
   state.transactions = [transaction("expense", "expense", 80)];
   state.refunds = [{
     id: "refund-1",
@@ -470,6 +473,7 @@ test("信用账单按周期区分出账额、应还额、跨期退款和溢缴�
 test("严格报销只把到账差额计入普通收支", () => {
   const state = createDefaultLedger();
   state.accounts.find((item) => item.id === "acc-cash").initialBalance = 200;
+  state.accounts.find((item) => item.id === "acc-cash").initialBalanceMinor = 20000;
   state.transactions = [
     transaction("reimburse-1", "expense", 100, { reimburseStatus: "pending" }),
     transaction("reimburse-2", "expense", 50, { reimburseStatus: "pending" }),

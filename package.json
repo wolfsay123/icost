@@ -1,6 +1,6 @@
 {
   "name": "zhiji-local",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "description": "智记本地记账与坚果云同步应用",
   "scripts": {
@@ -22,5 +22,8 @@
     "@capacitor/android": "^8.0.0",
     "@capacitor/cli": "^8.0.0",
     "esbuild": "^0.25.0"
+  },
+  "overrides": {
+    "@xmldom/xmldom": "^0.9.12"
   }
 }

@@ -930,9 +930,66 @@
     }
   };
 
+  // src/money.mjs
+  var MONEY_SCALE = 100;
+  function parseDecimal(value) {
+    const text = String(value ?? "").trim();
+    const match = text.match(/^([+-]?)(\d+)(?:\.(\d*))?(?:e([+-]?\d+))?$/i);
+    if (!match) return null;
+    const sign = match[1] === "-" ? -1n : 1n;
+    const integer = match[2];
+    const fraction = match[3] || "";
+    const exponent = Number(match[4] || 0);
+    if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 1e3) return null;
+    return { sign, digits: BigInt(`${integer}${fraction}`), scale: fraction.length - exponent };
+  }
+  function toMinor(value, fallback = 0) {
+    const parsed = parseDecimal(value);
+    if (!parsed) return fallback;
+    let minor;
+    const shift = 2 - parsed.scale;
+    if (shift >= 0) {
+      minor = parsed.digits * 10n ** BigInt(shift);
+    } else {
+      const divisor = 10n ** BigInt(-shift);
+      const quotient = parsed.digits / divisor;
+      const remainder = parsed.digits % divisor;
+      minor = quotient + (remainder * 2n >= divisor ? 1n : 0n);
+    }
+    minor *= parsed.sign;
+    const number = Number(minor);
+    return Number.isSafeInteger(number) ? number : fallback;
+  }
+  function fromMinor(value, fallback = 0) {
+    const minor = Number(value);
+    return Number.isSafeInteger(minor) ? minor / MONEY_SCALE : fallback;
+  }
+  function readMinor(record, field = "amount", fallback = 0) {
+    const minor = Number(record?.[`${field}Minor`]);
+    return Number.isSafeInteger(minor) ? minor : toMinor(record?.[field], fallback);
+  }
+  function writeMoney(record, field, value) {
+    const minor = toMinor(value);
+    record[field] = fromMinor(minor);
+    record[`${field}Minor`] = minor;
+    return record[field];
+  }
+  function moneyFields(value, minorValue, fallback = 0) {
+    const providedMinor = Number(minorValue);
+    const minor = Number.isSafeInteger(providedMinor) ? providedMinor : toMinor(value, fallback);
+    return { value: fromMinor(minor), minor };
+  }
+  function convertMinor(minor, rate = 1) {
+    const numericRate = Number(rate);
+    if (!Number.isSafeInteger(minor) || !Number.isFinite(numericRate)) return 0;
+    const converted = Math.round(minor * numericRate);
+    if (!Number.isSafeInteger(converted)) throw new Error("\u91D1\u989D\u6216\u6C47\u7387\u8D85\u51FA\u652F\u6301\u8303\u56F4");
+    return converted;
+  }
+
   // src/ledger-schema.mjs
   var STORAGE_KEY = "zhiji.local.v1";
-  var SCHEMA_VERSION = 5;
+  var SCHEMA_VERSION = 6;
   var DEFAULT_BOOK_ID = "book-default";
   var DEFAULT_CURRENCY = "CNY";
   var TRANSACTION_TYPES = /* @__PURE__ */ new Set([
@@ -986,6 +1043,23 @@
     const number = Number(value);
     return Number.isFinite(number) ? number : fallback;
   }
+  function normalizedMoney(record, field, fallback = 0, minimumMinor = null) {
+    const pair = moneyFields(record?.[field], record?.[`${field}Minor`], toMinor(fallback));
+    if (minimumMinor != null && pair.minor < minimumMinor) {
+      return { [field]: minimumMinor / 100, [`${field}Minor`]: minimumMinor };
+    }
+    return { [field]: pair.value, [`${field}Minor`]: pair.minor };
+  }
+  function normalizedAllocations(record) {
+    const major = record?.allocations && typeof record.allocations === "object" ? record.allocations : {};
+    const minor = record?.allocationsMinor && typeof record.allocationsMinor === "object" ? record.allocationsMinor : {};
+    const ids2 = /* @__PURE__ */ new Set([...Object.keys(major), ...Object.keys(minor)]);
+    const pairs = [...ids2].map((id) => [id, moneyFields(major[id], minor[id])]);
+    return {
+      allocations: Object.fromEntries(pairs.filter(([id, pair]) => id && pair.minor > 0).map(([id, pair]) => [id, pair.value])),
+      allocationsMinor: Object.fromEntries(pairs.filter(([id, pair]) => id && pair.minor > 0).map(([id, pair]) => [id, pair.minor]))
+    };
+  }
   function categoryKind(item) {
     if (["expense", "income", "transfer"].includes(item.kind)) return item.kind;
     if (["\u5DE5\u8D44", "\u5956\u91D1"].includes(item.name)) return "income";
@@ -1005,6 +1079,7 @@
       baseCurrency: DEFAULT_CURRENCY,
       settings: {
         monthlyBudget: 5e3,
+        monthlyBudgetMinor: 5e5,
         weekStartsOn: 1,
         monthStartsOn: 1,
         amountHidden: false
@@ -1015,6 +1090,7 @@
         color: "#1f6650",
         icon: "ledger",
         monthlyBudget: 5e3,
+        monthlyBudgetMinor: 5e5,
         hidden: false,
         order: 0,
         createdAt: now
@@ -1029,6 +1105,7 @@
       })),
       accounts: DEFAULT_ACCOUNTS.map((item, order) => ({
         ...item,
+        initialBalanceMinor: 0,
         bookIds: [DEFAULT_BOOK_ID],
         currencyCode: DEFAULT_CURRENCY,
         includeInNetAssets: true,
@@ -1076,16 +1153,13 @@
     const books = Array.isArray(raw.books) && raw.books.some(validEntity) ? raw.books.filter(validEntity).map((book, order) => ({
       ...book,
       name: String(book.name || `\u8D26\u672C ${order + 1}`),
-      monthlyBudget: Math.max(0, finiteNumber(
-        book.monthlyBudget,
-        book.id === (raw.activeBookId || DEFAULT_BOOK_ID) ? raw.settings?.monthlyBudget : fallback.settings.monthlyBudget
-      )),
+      ...normalizedMoney(book, "monthlyBudget", book.id === (raw.activeBookId || DEFAULT_BOOK_ID) ? raw.settings?.monthlyBudget : fallback.settings.monthlyBudget, 0),
       hidden: Boolean(book.hidden),
       order: finiteNumber(book.order, order),
       createdAt: book.createdAt || raw.metadata?.createdAt || now
     })) : fallback.books.map((book) => ({
       ...book,
-      monthlyBudget: Math.max(0, finiteNumber(raw.settings?.monthlyBudget, book.monthlyBudget))
+      ...normalizedMoney(raw.settings, "monthlyBudget", book.monthlyBudget, 0)
     }));
     const requestedBookId = raw.activeBookId || DEFAULT_BOOK_ID;
     const activeBookId = books.some((book) => book.id === requestedBookId) ? requestedBookId : books[0].id;
@@ -1104,7 +1178,7 @@
       ...item,
       name: String(item.name),
       type: accountType(item),
-      initialBalance: finiteNumber(item.initialBalance),
+      ...normalizedMoney(item, "initialBalance"),
       bookIds: Array.isArray(item.bookIds) && item.bookIds.length ? [...new Set(item.bookIds.filter((bookId) => books.some((book) => book.id === bookId)))] : books.map((book) => book.id),
       currencyCode: item.currencyCode || raw.baseCurrency || DEFAULT_CURRENCY,
       includeInNetAssets: item.includeInNetAssets !== false,
@@ -1112,7 +1186,7 @@
       order: finiteNumber(item.order, order),
       credit: item.credit && typeof item.credit === "object" ? {
         ...item.credit,
-        limit: Math.max(0, finiteNumber(item.credit.limit)),
+        ...normalizedMoney(item.credit, "limit", 0, 0),
         billingDay: item.credit.billingDay == null ? null : finiteNumber(item.credit.billingDay),
         billingDayInNextCycle: Boolean(item.credit.billingDayInNextCycle),
         repaymentType: item.credit.repaymentType === "delay" ? "delay" : "fixed",
@@ -1126,22 +1200,25 @@
       balanceReminder: item.balanceReminder && typeof item.balanceReminder === "object" ? {
         enabled: Boolean(item.balanceReminder.enabled),
         direction: item.balanceReminder.direction === "above" ? "above" : "below",
-        amount: Math.max(0, finiteNumber(item.balanceReminder.amount))
+        ...normalizedMoney(item.balanceReminder, "amount", 0, 0)
       } : null,
       deletedAt: item.deletedAt || null
     })) : [];
-    const transactions = Array.isArray(raw.transactions) ? raw.transactions.filter((item) => validEntity(item) && TRANSACTION_TYPES.has(item.type) && finiteNumber(item.amount) > 0 && item.accountId && item.date).map((item) => ({
+    const transactions = Array.isArray(raw.transactions) ? raw.transactions.filter((item) => validEntity(item) && TRANSACTION_TYPES.has(item.type) && readMinor(item) > 0 && item.accountId && item.date).map((item) => ({
       ...item,
       bookId: item.bookId || activeBookId,
-      amount: finiteNumber(item.amount),
-      originalAmount: finiteNumber(item.originalAmount, finiteNumber(item.amount)),
+      ...normalizedMoney(item, "amount"),
+      ...normalizedMoney(item, "originalAmount", moneyFields(item.amount, item.amountMinor).value),
       currencyCode: item.currencyCode || raw.baseCurrency || DEFAULT_CURRENCY,
       exchangeRate: finiteNumber(item.exchangeRate, 1) || 1,
       targetAccountId: item.targetAccountId || null,
       categoryId: item.categoryId || null,
       tagIds: Array.isArray(item.tagIds) ? item.tagIds : [],
       merchantId: item.merchantId || null,
-      memberShares: Array.isArray(item.memberShares) ? item.memberShares : [],
+      memberShares: Array.isArray(item.memberShares) ? item.memberShares.map((share) => ({
+        ...share,
+        ...normalizedMoney(share, "amount")
+      })) : [],
       time: item.time || "12:00",
       note: String(item.note || ""),
       status: item.status || "posted",
@@ -1160,41 +1237,41 @@
       reconciled: Boolean(item.reconciled),
       deletedAt: item.deletedAt || null
     })) : [];
-    const refunds = Array.isArray(raw.refunds) ? raw.refunds.filter((item) => validEntity(item) && item.transactionId && item.accountId && finiteNumber(item.amount) > 0 && item.date).map((item) => ({
+    const refunds = Array.isArray(raw.refunds) ? raw.refunds.filter((item) => validEntity(item) && item.transactionId && item.accountId && readMinor(item) > 0 && item.date).map((item) => ({
       ...item,
-      amount: finiteNumber(item.amount),
-      accountAmount: finiteNumber(item.accountAmount, finiteNumber(item.amount)),
+      ...normalizedMoney(item, "amount"),
+      ...normalizedMoney(item, "accountAmount", moneyFields(item.amount, item.amountMinor).value),
       currencyCode: item.currencyCode || raw.baseCurrency || DEFAULT_CURRENCY,
       exchangeRate: finiteNumber(item.exchangeRate, 1) || 1,
       time: item.time || "12:00",
       note: String(item.note || ""),
       deletedAt: item.deletedAt || null
     })) : [];
-    const settlements = Array.isArray(raw.settlements) ? raw.settlements.filter((item) => validEntity(item) && Array.isArray(item.sourceTransactionIds) && item.sourceTransactionIds.length && item.transactionId && finiteNumber(item.amount) > 0).map((item) => ({
+    const settlements = Array.isArray(raw.settlements) ? raw.settlements.filter((item) => validEntity(item) && Array.isArray(item.sourceTransactionIds) && item.sourceTransactionIds.length && item.transactionId && readMinor(item) > 0).map((item) => ({
       ...item,
       sourceTransactionIds: [...new Set(item.sourceTransactionIds.filter(Boolean))],
-      amount: finiteNumber(item.amount),
-      allocations: item.allocations && typeof item.allocations === "object" ? Object.fromEntries(Object.entries(item.allocations).filter(([id, amount]) => id && finiteNumber(amount) > 0).map(([id, amount]) => [id, finiteNumber(amount)])) : null,
+      ...normalizedMoney(item, "amount"),
+      ...normalizedAllocations(item),
       deletedAt: item.deletedAt || null
     })) : [];
-    const reimbursements = Array.isArray(raw.reimbursements) ? raw.reimbursements.filter((item) => validEntity(item) && Array.isArray(item.sourceTransactionIds) && item.sourceTransactionIds.length && item.transactionId && finiteNumber(item.expectedAmount) > 0 && finiteNumber(item.actualAmount) > 0).map((item) => ({
+    const reimbursements = Array.isArray(raw.reimbursements) ? raw.reimbursements.filter((item) => validEntity(item) && Array.isArray(item.sourceTransactionIds) && item.sourceTransactionIds.length && item.transactionId && readMinor(item, "expectedAmount") > 0 && readMinor(item, "actualAmount") > 0).map((item) => ({
       ...item,
       sourceTransactionIds: [...new Set(item.sourceTransactionIds.filter(Boolean))],
       accountId: item.accountId || null,
-      expectedAmount: finiteNumber(item.expectedAmount),
-      actualAmount: finiteNumber(item.actualAmount),
-      receiptAmount: finiteNumber(item.receiptAmount, finiteNumber(item.expectedAmount)),
-      differenceAmount: Math.max(0, finiteNumber(item.differenceAmount)),
+      ...normalizedMoney(item, "expectedAmount"),
+      ...normalizedMoney(item, "actualAmount"),
+      ...normalizedMoney(item, "receiptAmount", moneyFields(item.expectedAmount, item.expectedAmountMinor).value),
+      ...normalizedMoney(item, "differenceAmount", 0, 0),
       differenceType: ["income", "expense"].includes(item.differenceType) ? item.differenceType : null,
       differenceTransactionId: item.differenceTransactionId || null,
-      allocations: item.allocations && typeof item.allocations === "object" ? Object.fromEntries(Object.entries(item.allocations).filter(([id, amount]) => id && finiteNumber(amount) > 0).map(([id, amount]) => [id, finiteNumber(amount)])) : null,
+      ...normalizedAllocations(item),
       currencyCode: item.currencyCode || raw.baseCurrency || DEFAULT_CURRENCY,
       exchangeRate: finiteNumber(item.exchangeRate, 1) || 1,
       date: item.date || now.slice(0, 10),
       note: String(item.note || ""),
       deletedAt: item.deletedAt || null
     })) : [];
-    const savingsPlans = Array.isArray(raw.savingsPlans) ? raw.savingsPlans.filter((item) => validEntity(item) && item.name && item.sourceAccountId && item.targetAccountId && item.startDate && finiteNumber(item.totalPeriods) > 0 && finiteNumber(item.startAmount) > 0).map((item) => ({
+    const savingsPlans = Array.isArray(raw.savingsPlans) ? raw.savingsPlans.filter((item) => validEntity(item) && item.name && item.sourceAccountId && item.targetAccountId && item.startDate && finiteNumber(item.totalPeriods) > 0 && readMinor(item, "startAmount") > 0).map((item) => ({
       ...item,
       bookId: item.bookId || activeBookId,
       name: String(item.name),
@@ -1205,9 +1282,9 @@
       startDate: item.startDate,
       frequency: ["daily", "weekly", "monthly"].includes(item.frequency) ? item.frequency : "monthly",
       totalPeriods: Math.min(1e3, Math.max(1, Math.trunc(finiteNumber(item.totalPeriods, 1)))),
-      startAmount: Math.max(0.01, finiteNumber(item.startAmount, 0.01)),
-      incrementAmount: Math.max(0, finiteNumber(item.incrementAmount)),
-      targetAmount: Math.max(0.01, finiteNumber(item.targetAmount, finiteNumber(item.startAmount, 0.01))),
+      ...normalizedMoney(item, "startAmount", 0.01, 1),
+      ...normalizedMoney(item, "incrementAmount", 0, 0),
+      ...normalizedMoney(item, "targetAmount", moneyFields(item.startAmount, item.startAmountMinor, 1).value, 1),
       status: item.status === "paused" ? "paused" : "active",
       deletedAt: item.deletedAt || null,
       createdAt: item.createdAt || now
@@ -1248,7 +1325,7 @@
         migratedSourceIds.add(source.id);
       });
     }
-    const monthlyBudget = finiteNumber(raw.settings?.monthlyBudget, fallback.settings.monthlyBudget);
+    const monthlyBudget = moneyFields(raw.settings?.monthlyBudget, raw.settings?.monthlyBudgetMinor, fallback.settings.monthlyBudgetMinor);
     const state = {
       ...fallback,
       version: SCHEMA_VERSION,
@@ -1257,7 +1334,8 @@
       settings: {
         ...fallback.settings,
         ...raw.settings && typeof raw.settings === "object" ? raw.settings : {},
-        monthlyBudget: monthlyBudget >= 0 ? monthlyBudget : fallback.settings.monthlyBudget
+        monthlyBudget: monthlyBudget.minor >= 0 ? monthlyBudget.value : fallback.settings.monthlyBudget,
+        monthlyBudgetMinor: monthlyBudget.minor >= 0 ? monthlyBudget.minor : fallback.settings.monthlyBudgetMinor
       },
       books,
       categories: categories.length ? categories : fallback.categories,
@@ -1280,13 +1358,138 @@
     ARRAY_COLLECTIONS.forEach((name) => {
       state[name] = Array.isArray(raw[name]) ? raw[name].filter(validEntity) : fallback[name];
     });
+    state.budgets = state.budgets.map((item) => ({
+      ...item,
+      ...item.kind === "goal" ? {
+        ...normalizedMoney(item, "targetAmount", 0, 0),
+        ...normalizedMoney(item, "currentAmount", 0, 0)
+      } : normalizedMoney(item, "amount", 0, 0)
+    }));
+    state.schedules = state.schedules.map((item) => ({ ...item, ...normalizedMoney(item, "amount", 0, 0) }));
+    state.installments = state.installments.map((item) => ({ ...item, ...normalizedMoney(item, "totalAmount", 0, 0) }));
+    state.templates = state.templates.map((item) => ({
+      ...item,
+      values: item.values && typeof item.values === "object" ? {
+        ...item.values,
+        ...normalizedMoney(item.values, "amount"),
+        ...normalizedMoney(item.values, "originalAmount", moneyFields(item.values.amount, item.values.amountMinor).value)
+      } : item.values
+    }));
     return state;
   }
 
+  // src/ledger-restore.mjs
+  var CORE_COLLECTIONS = [
+    "books",
+    "categories",
+    "accounts",
+    "transactions",
+    "refunds",
+    "settlements",
+    "reimbursements",
+    "savingsPlans"
+  ];
+  function ids(items) {
+    return new Set((items || []).map((item) => item?.id).filter(Boolean));
+  }
+  function assertReference(condition, message) {
+    if (!condition) throw new Error(`\u5907\u4EFD\u6570\u636E\u5173\u8054\u635F\u574F\uFF1A${message}`);
+  }
+  function validateLedgerReferences(state) {
+    const bookIds = ids(state.books);
+    const categoryIds = ids(state.categories);
+    const accountIds = ids(state.accounts);
+    const transactionIds = ids(state.transactions);
+    CORE_COLLECTIONS.forEach((name) => {
+      const values = (state[name] || []).map((item) => item.id);
+      assertReference(new Set(values).size === values.length, `${name} \u5B58\u5728\u91CD\u590D ID`);
+    });
+    assertReference(bookIds.has(state.activeBookId), "\u5F53\u524D\u8D26\u672C\u4E0D\u5B58\u5728");
+    state.categories.forEach((item) => assertReference(bookIds.has(item.bookId), `\u5206\u7C7B ${item.id} \u7684\u8D26\u672C\u4E0D\u5B58\u5728`));
+    state.accounts.forEach((item) => {
+      (item.bookIds || []).forEach((bookId) => assertReference(bookIds.has(bookId), `\u8D26\u6237 ${item.id} \u7684\u8D26\u672C\u4E0D\u5B58\u5728`));
+      if (item.credit?.sharedLimitAccountId) {
+        assertReference(accountIds.has(item.credit.sharedLimitAccountId), `\u8D26\u6237 ${item.id} \u7684\u5171\u4EAB\u989D\u5EA6\u8D26\u6237\u4E0D\u5B58\u5728`);
+      }
+    });
+    state.transactions.forEach((item) => {
+      assertReference(bookIds.has(item.bookId), `\u4EA4\u6613 ${item.id} \u7684\u8D26\u672C\u4E0D\u5B58\u5728`);
+      assertReference(accountIds.has(item.accountId), `\u4EA4\u6613 ${item.id} \u7684\u8D26\u6237\u4E0D\u5B58\u5728`);
+      if (item.categoryId) assertReference(categoryIds.has(item.categoryId), `\u4EA4\u6613 ${item.id} \u7684\u5206\u7C7B\u4E0D\u5B58\u5728`);
+      if (item.type === "transfer") {
+        assertReference(accountIds.has(item.targetAccountId), `\u8F6C\u8D26 ${item.id} \u7684\u8F6C\u5165\u8D26\u6237\u4E0D\u5B58\u5728`);
+        assertReference(item.targetAccountId !== item.accountId, `\u8F6C\u8D26 ${item.id} \u7684\u8F6C\u5165\u8F6C\u51FA\u8D26\u6237\u76F8\u540C`);
+      }
+    });
+    state.refunds.forEach((item) => {
+      assertReference(transactionIds.has(item.transactionId), `\u9000\u6B3E ${item.id} \u7684\u539F\u4EA4\u6613\u4E0D\u5B58\u5728`);
+      assertReference(accountIds.has(item.accountId), `\u9000\u6B3E ${item.id} \u7684\u8D26\u6237\u4E0D\u5B58\u5728`);
+    });
+    state.settlements.forEach((item) => {
+      assertReference(transactionIds.has(item.transactionId), `\u7ED3\u7B97 ${item.id} \u7684\u5165\u8D26\u4EA4\u6613\u4E0D\u5B58\u5728`);
+      item.sourceTransactionIds.forEach((id) => assertReference(transactionIds.has(id), `\u7ED3\u7B97 ${item.id} \u7684\u6765\u6E90\u4EA4\u6613\u4E0D\u5B58\u5728`));
+    });
+    state.reimbursements.forEach((item) => {
+      assertReference(transactionIds.has(item.transactionId), `\u62A5\u9500 ${item.id} \u7684\u5230\u8D26\u4EA4\u6613\u4E0D\u5B58\u5728`);
+      item.sourceTransactionIds.forEach((id) => assertReference(transactionIds.has(id), `\u62A5\u9500 ${item.id} \u7684\u6765\u6E90\u4EA4\u6613\u4E0D\u5B58\u5728`));
+      if (item.accountId) assertReference(accountIds.has(item.accountId), `\u62A5\u9500 ${item.id} \u7684\u8D26\u6237\u4E0D\u5B58\u5728`);
+      if (item.differenceTransactionId) {
+        assertReference(transactionIds.has(item.differenceTransactionId), `\u62A5\u9500 ${item.id} \u7684\u5DEE\u989D\u4EA4\u6613\u4E0D\u5B58\u5728`);
+      }
+    });
+    state.savingsPlans.forEach((item) => {
+      assertReference(bookIds.has(item.bookId), `\u5B58\u94B1\u8BA1\u5212 ${item.id} \u7684\u8D26\u672C\u4E0D\u5B58\u5728`);
+      assertReference(accountIds.has(item.sourceAccountId), `\u5B58\u94B1\u8BA1\u5212 ${item.id} \u7684\u8F6C\u51FA\u8D26\u6237\u4E0D\u5B58\u5728`);
+      assertReference(accountIds.has(item.targetAccountId), `\u5B58\u94B1\u8BA1\u5212 ${item.id} \u7684\u5B58\u6B3E\u8D26\u6237\u4E0D\u5B58\u5728`);
+      assertReference(item.sourceAccountId !== item.targetAccountId, `\u5B58\u94B1\u8BA1\u5212 ${item.id} \u7684\u8D26\u6237\u76F8\u540C`);
+    });
+    state.budgets.forEach((item) => {
+      if (item.bookId) assertReference(bookIds.has(item.bookId), `\u9884\u7B97 ${item.id} \u7684\u8D26\u672C\u4E0D\u5B58\u5728`);
+      if (item.categoryId) assertReference(categoryIds.has(item.categoryId), `\u9884\u7B97 ${item.id} \u7684\u5206\u7C7B\u4E0D\u5B58\u5728`);
+    });
+    state.schedules.forEach((item) => {
+      if (item.bookId) assertReference(bookIds.has(item.bookId), `\u5468\u671F\u8D26 ${item.id} \u7684\u8D26\u672C\u4E0D\u5B58\u5728`);
+      if (item.categoryId) assertReference(categoryIds.has(item.categoryId), `\u5468\u671F\u8D26 ${item.id} \u7684\u5206\u7C7B\u4E0D\u5B58\u5728`);
+      if (item.accountId) assertReference(accountIds.has(item.accountId), `\u5468\u671F\u8D26 ${item.id} \u7684\u8D26\u6237\u4E0D\u5B58\u5728`);
+    });
+    state.installments.forEach((item) => {
+      if (item.bookId) assertReference(bookIds.has(item.bookId), `\u5206\u671F ${item.id} \u7684\u8D26\u672C\u4E0D\u5B58\u5728`);
+      if (item.categoryId) assertReference(categoryIds.has(item.categoryId), `\u5206\u671F ${item.id} \u7684\u5206\u7C7B\u4E0D\u5B58\u5728`);
+      if (item.accountId) assertReference(accountIds.has(item.accountId), `\u5206\u671F ${item.id} \u7684\u8D26\u6237\u4E0D\u5B58\u5728`);
+    });
+    state.templates.forEach((item) => {
+      if (item.bookId) assertReference(bookIds.has(item.bookId), `\u6A21\u677F ${item.id} \u7684\u8D26\u672C\u4E0D\u5B58\u5728`);
+      const values = item.values;
+      if (!values) return;
+      if (values.categoryId) assertReference(categoryIds.has(values.categoryId), `\u6A21\u677F ${item.id} \u7684\u5206\u7C7B\u4E0D\u5B58\u5728`);
+      if (values.accountId) assertReference(accountIds.has(values.accountId), `\u6A21\u677F ${item.id} \u7684\u8D26\u6237\u4E0D\u5B58\u5728`);
+      if (values.targetAccountId) assertReference(accountIds.has(values.targetAccountId), `\u6A21\u677F ${item.id} \u7684\u8F6C\u5165\u8D26\u6237\u4E0D\u5B58\u5728`);
+    });
+    return state;
+  }
+  function prepareLedgerRestore(raw, now = (/* @__PURE__ */ new Date()).toISOString()) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("\u5907\u4EFD\u6570\u636E\u4E0D\u662F\u6709\u6548\u8D26\u672C");
+    const version = Number(raw.version ?? 1);
+    if (!Number.isInteger(version) || version < 1) throw new Error("\u5907\u4EFD\u6570\u636E\u7248\u672C\u65E0\u6548");
+    if (version > SCHEMA_VERSION) throw new Error(`\u5907\u4EFD\u6765\u81EA\u66F4\u9AD8\u7248\u672C\uFF08v${version}\uFF09\uFF0C\u5F53\u524D App \u6700\u9AD8\u652F\u6301 v${SCHEMA_VERSION}`);
+    if (raw.activeBookId && Array.isArray(raw.books) && !raw.books.some((item) => item?.id === raw.activeBookId)) {
+      throw new Error("\u5907\u4EFD\u6570\u636E\u5173\u8054\u635F\u574F\uFF1A\u5F53\u524D\u8D26\u672C\u4E0D\u5B58\u5728");
+    }
+    const normalized = normalizeLedger(raw, now);
+    CORE_COLLECTIONS.forEach((name) => {
+      if (Array.isArray(raw[name]) && normalized[name].length !== raw[name].length) {
+        throw new Error(`\u5907\u4EFD\u6570\u636E\u635F\u574F\uFF1A${name} \u6709\u8BB0\u5F55\u65E0\u6CD5\u8BFB\u53D6`);
+      }
+    });
+    return validateLedgerReferences(normalized);
+  }
+
   // src/ledger-domain.mjs
-  var MONEY_SCALE = 100;
   function roundMoney(value) {
-    return Math.round((Number(value) || 0) * MONEY_SCALE) / MONEY_SCALE;
+    return fromMinor(toMinor(value));
+  }
+  function baseMinor(record, field = "amount") {
+    return convertMinor(readMinor(record, field), record?.exchangeRate || 1);
   }
   function formatLocalDate(date) {
     const year = date.getFullYear();
@@ -1399,15 +1602,17 @@
     const number = Number(period);
     const totalPeriods = Number(plan?.totalPeriods);
     if (!Number.isInteger(number) || number < 1 || number > totalPeriods) throw new Error("\u5B58\u94B1\u8BA1\u5212\u671F\u6B21\u65E0\u6548");
-    return roundMoney(Number(plan.startAmount) + Number(plan.incrementAmount || 0) * (number - 1));
+    return fromMinor(readMinor(plan, "startAmount") + readMinor(plan, "incrementAmount") * (number - 1));
   }
   function validateSavingsPlan(input, state) {
     const preset = savingsPlanPreset(input.template || "custom");
     const fixedPreset = ["daily365", "weekly52"].includes(input.template);
     const frequency = fixedPreset ? preset.frequency : input.frequency || preset.frequency;
     const totalPeriods = Number(fixedPreset ? preset.totalPeriods : input.totalPeriods ?? preset.totalPeriods);
-    const startAmount = roundMoney(fixedPreset ? preset.startAmount : input.startAmount ?? preset.startAmount);
-    const incrementAmount = roundMoney(fixedPreset ? preset.incrementAmount : input.incrementAmount ?? preset.incrementAmount);
+    const startAmountMinor = toMinor(fixedPreset ? preset.startAmount : input.startAmount ?? preset.startAmount);
+    const incrementAmountMinor = toMinor(fixedPreset ? preset.incrementAmount : input.incrementAmount ?? preset.incrementAmount);
+    const startAmount = fromMinor(startAmountMinor);
+    const incrementAmount = fromMinor(incrementAmountMinor);
     if (!["daily", "weekly", "monthly"].includes(frequency)) throw new Error("\u5B58\u94B1\u5468\u671F\u65E0\u6548");
     if (!Number.isInteger(totalPeriods) || totalPeriods < 1 || totalPeriods > 1e3) throw new Error("\u5B58\u94B1\u671F\u6570\u5FC5\u987B\u4E3A 1 \u5230 1000");
     if (startAmount <= 0) throw new Error("\u9996\u671F\u91D1\u989D\u5FC5\u987B\u5927\u4E8E 0");
@@ -1421,7 +1626,9 @@
     }
     if (source.id === target.id) throw new Error("\u8F6C\u51FA\u8D26\u6237\u548C\u5B58\u6B3E\u8D26\u6237\u4E0D\u80FD\u76F8\u540C");
     if (source.currencyCode !== target.currencyCode) throw new Error("\u5B58\u94B1\u8BA1\u5212\u6682\u53EA\u652F\u6301\u540C\u5E01\u79CD\u8D26\u6237");
-    const targetAmount = roundMoney(totalPeriods * (startAmount * 2 + (totalPeriods - 1) * incrementAmount) / 2);
+    const targetAmountMinor = totalPeriods * (startAmountMinor * 2 + (totalPeriods - 1) * incrementAmountMinor) / 2;
+    if (!Number.isSafeInteger(targetAmountMinor)) throw new Error("\u5B58\u94B1\u8BA1\u5212\u603B\u989D\u8D85\u51FA\u652F\u6301\u8303\u56F4");
+    const targetAmount = fromMinor(targetAmountMinor);
     return {
       template: input.template || "custom",
       bookId: input.bookId,
@@ -1433,8 +1640,11 @@
       frequency,
       totalPeriods,
       startAmount,
+      startAmountMinor,
       incrementAmount,
+      incrementAmountMinor,
       targetAmount,
+      targetAmountMinor,
       status: input.status === "paused" ? "paused" : "active"
     };
   }
@@ -1451,13 +1661,15 @@
         break;
       }
     }
-    const savedAmount = roundMoney([...completed.values()].reduce((sum, item) => sum + Number(item.amount || 0), 0));
-    const targetAmount = roundMoney(plan.targetAmount);
+    const savedAmountMinor = [...completed.values()].reduce((sum, item) => sum + readMinor(item), 0);
+    const targetAmountMinor = readMinor(plan, "targetAmount");
+    const savedAmount = fromMinor(savedAmountMinor);
+    const targetAmount = fromMinor(targetAmountMinor);
     return {
       completedPeriods: completed.size,
       savedAmount,
       targetAmount,
-      percentage: targetAmount > 0 ? Math.min(100, Math.round(savedAmount / targetAmount * 100)) : 0,
+      percentage: targetAmountMinor > 0 ? Math.min(100, Math.round(savedAmountMinor / targetAmountMinor * 100)) : 0,
       nextPeriod,
       nextAmount: nextPeriod ? savingsPlanAmount(plan, nextPeriod) : 0,
       nextDate: nextPeriod ? savingsPlanDateAt(plan.startDate, plan.frequency, nextPeriod - 1) : null,
@@ -1465,13 +1677,13 @@
     };
   }
   function installmentAmount(totalAmount, periods, paidPeriods) {
-    const total = roundMoney(totalAmount);
+    const totalMinor = toMinor(totalAmount);
     const count = Number(periods);
     const paid = Number(paidPeriods);
-    if (total <= 0 || !Number.isInteger(count) || count < 2) throw new Error("\u5206\u671F\u53C2\u6570\u65E0\u6548");
+    if (totalMinor <= 0 || !Number.isInteger(count) || count < 2) throw new Error("\u5206\u671F\u53C2\u6570\u65E0\u6548");
     if (!Number.isInteger(paid) || paid < 0 || paid >= count) throw new Error("\u5206\u671F\u671F\u6570\u5DF2\u5B8C\u6210\u6216\u65E0\u6548");
-    const regular = roundMoney(total / count);
-    return paid === count - 1 ? roundMoney(total - regular * (count - 1)) : regular;
+    const regularMinor = Math.round(totalMinor / count);
+    return fromMinor(paid === count - 1 ? totalMinor - regularMinor * (count - 1) : regularMinor);
   }
   function accountAvailableInBook(account, bookId) {
     return Boolean(
@@ -1482,30 +1694,34 @@
     return (state.refunds || []).filter((item) => !item.deletedAt && (!transactionId || item.transactionId === transactionId));
   }
   function refundedAmount(state, transactionId) {
-    return roundMoney(activeRefunds(state, transactionId).reduce((total, item) => total + Number(item.amount || 0), 0));
+    return fromMinor(activeRefunds(state, transactionId).reduce((total, item) => total + readMinor(item), 0));
   }
   function validateRefund(input, state) {
     const transaction = state.transactions.find((item) => item.id === input.transactionId && !item.deletedAt);
     if (!transaction) throw new Error("\u539F\u660E\u7EC6\u4E0D\u5B58\u5728");
     if (!["expense", "income"].includes(transaction.type)) throw new Error("\u4EC5\u6536\u652F\u660E\u7EC6\u652F\u6301\u9000\u6B3E");
-    const amount = roundMoney(input.amount);
-    if (amount <= 0) throw new Error("\u9000\u6B3E\u91D1\u989D\u5FC5\u987B\u5927\u4E8E 0");
+    const amountMinor = readMinor(input);
+    const amount = fromMinor(amountMinor);
+    if (amountMinor <= 0) throw new Error("\u9000\u6B3E\u91D1\u989D\u5FC5\u987B\u5927\u4E8E 0");
     const editingRefund = input.refundId ? activeRefunds(state, transaction.id).find((item) => item.id === input.refundId) : null;
-    const existingAmount = roundMoney(refundedAmount(state, transaction.id) - Number(editingRefund?.amount || 0));
-    if (roundMoney(existingAmount + amount) > roundMoney(transaction.amount)) {
+    const existingAmountMinor = activeRefunds(state, transaction.id).filter((item) => item.id !== editingRefund?.id).reduce((total, item) => total + readMinor(item), 0);
+    if (existingAmountMinor + amountMinor > readMinor(transaction)) {
       throw new Error("\u7D2F\u8BA1\u9000\u6B3E\u91D1\u989D\u4E0D\u80FD\u8D85\u8FC7\u539F\u660E\u7EC6\u91D1\u989D");
     }
     const account = state.accounts.find((item) => item.id === input.accountId);
     if (!accountAvailableInBook(account, transaction.bookId)) throw new Error("\u9000\u6B3E\u8D26\u6237\u4E0D\u53EF\u7528\u4E8E\u5F53\u524D\u8D26\u672C");
-    const accountAmount = roundMoney(input.accountAmount ?? amount);
-    if (accountAmount <= 0) throw new Error("\u9000\u6B3E\u6298\u5408\u91D1\u989D\u5FC5\u987B\u5927\u4E8E 0");
+    const accountAmountMinor = input.accountAmount == null && input.accountAmountMinor == null ? amountMinor : readMinor(input, "accountAmount");
+    const accountAmount = fromMinor(accountAmountMinor);
+    if (accountAmountMinor <= 0) throw new Error("\u9000\u6B3E\u6298\u5408\u91D1\u989D\u5FC5\u987B\u5927\u4E8E 0");
     const accountCurrencyCode = input.currencyCode || account.currencyCode || transaction.currencyCode;
     const accountExchangeRate = Number(input.exchangeRate ?? state.currencies.find((item) => item.code === accountCurrencyCode)?.rate ?? 1);
     if (!(accountExchangeRate > 0)) throw new Error("\u9000\u6B3E\u8D26\u6237\u6C47\u7387\u5FC5\u987B\u5927\u4E8E 0");
     const result = {
       ...input,
       amount,
+      amountMinor,
       accountAmount,
+      accountAmountMinor,
       currencyCode: accountCurrencyCode,
       exchangeRate: accountExchangeRate
     };
@@ -1513,15 +1729,18 @@
     return result;
   }
   function settledAmount(state, transactionId) {
-    return roundMoney((state.settlements || []).filter((item) => !item.deletedAt && item.sourceTransactionIds?.includes(transactionId)).reduce((total, item) => {
-      const fallback = item.sourceTransactionIds.length === 1 ? item.amount : 0;
-      return total + Number(item.allocations?.[transactionId] ?? fallback ?? 0);
-    }, 0));
+    const minor = (state.settlements || []).filter((item) => !item.deletedAt && item.sourceTransactionIds?.includes(transactionId)).reduce((total, item) => {
+      const allocationMinor = Number(item.allocationsMinor?.[transactionId]);
+      if (Number.isSafeInteger(allocationMinor)) return total + allocationMinor;
+      const fallback = item.sourceTransactionIds.length === 1 ? readMinor(item) : 0;
+      return total + toMinor(item.allocations?.[transactionId], fallback);
+    }, 0);
+    return fromMinor(minor);
   }
   function remainingSettlementAmount(state, transactionId) {
     const transaction = state.transactions.find((item) => item.id === transactionId && !item.deletedAt);
     if (!transaction || !["payable", "receivable"].includes(transaction.type)) return 0;
-    return roundMoney(Math.max(0, transaction.amount - settledAmount(state, transactionId)));
+    return fromMinor(Math.max(0, readMinor(transaction) - toMinor(settledAmount(state, transactionId))));
   }
   function validateSettlement(input, state) {
     const sourceTransactionIds = [...new Set((input.sourceTransactionIds || []).filter(Boolean))];
@@ -1539,18 +1758,23 @@
     if (sources.some((item) => item.currencyCode !== currencyCode || Number(item.exchangeRate || 1) !== exchangeRate)) {
       throw new Error("\u4E0D\u540C\u5E01\u79CD\u6216\u6C47\u7387\u7684\u660E\u7EC6\u4E0D\u80FD\u5408\u5E76\u7ED3\u7B97");
     }
-    const amount = roundMoney(input.amount);
-    const remaining = roundMoney(sourceTransactionIds.reduce((total, id) => total + remainingSettlementAmount(state, id), 0));
-    if (amount <= 0) throw new Error("\u7ED3\u7B97\u91D1\u989D\u5FC5\u987B\u5927\u4E8E 0");
-    if (amount > remaining) throw new Error("\u7ED3\u7B97\u91D1\u989D\u4E0D\u80FD\u8D85\u8FC7\u5F85\u7ED3\u7B97\u91D1\u989D");
+    const amountMinor = readMinor(input);
+    const amount = fromMinor(amountMinor);
+    const remainingMinor = sourceTransactionIds.reduce((total, id) => total + toMinor(remainingSettlementAmount(state, id)), 0);
+    if (amountMinor <= 0) throw new Error("\u7ED3\u7B97\u91D1\u989D\u5FC5\u987B\u5927\u4E8E 0");
+    if (amountMinor > remainingMinor) throw new Error("\u7ED3\u7B97\u91D1\u989D\u4E0D\u80FD\u8D85\u8FC7\u5F85\u7ED3\u7B97\u91D1\u989D");
     const account = state.accounts.find((item) => item.id === input.accountId);
     if (!accountAvailableInBook(account, bookId)) throw new Error("\u7ED3\u7B97\u8D26\u6237\u4E0D\u53EF\u7528\u4E8E\u5F53\u524D\u8D26\u672C");
-    let amountLeft = amount;
+    let amountLeftMinor = amountMinor;
     const allocations = {};
+    const allocationsMinor = {};
     sourceTransactionIds.forEach((id) => {
-      const allocation = roundMoney(Math.min(amountLeft, remainingSettlementAmount(state, id)));
-      if (allocation > 0) allocations[id] = allocation;
-      amountLeft = roundMoney(amountLeft - allocation);
+      const allocationMinor = Math.min(amountLeftMinor, toMinor(remainingSettlementAmount(state, id)));
+      if (allocationMinor > 0) {
+        allocations[id] = fromMinor(allocationMinor);
+        allocationsMinor[id] = allocationMinor;
+      }
+      amountLeftMinor -= allocationMinor;
     });
     return {
       ...input,
@@ -1559,45 +1783,47 @@
       currencyCode,
       exchangeRate,
       amount,
+      amountMinor,
       allocations,
+      allocationsMinor,
       transactionType: type === "payable" ? "expense" : "income"
     };
   }
   function calculateAccountBalances(state, bookId = null) {
     const currencyRates = Object.fromEntries((state.currencies || []).map((currency) => [currency.code, currency.rate || 1]));
-    const balances = Object.fromEntries(state.accounts.filter((account) => !account.deletedAt).map((account) => {
-      const initial = roundMoney(account.initialBalance * (currencyRates[account.currencyCode] || 1));
+    const balancesMinor = Object.fromEntries(state.accounts.filter((account) => !account.deletedAt).map((account) => {
+      const initial = convertMinor(readMinor(account, "initialBalance"), currencyRates[account.currencyCode] || 1);
       return [account.id, account.type === "credit" ? -initial : initial];
     }));
     const transactions = state.transactions.filter((item) => !item.deletedAt && item.status !== "pending" && (!bookId || item.bookId === bookId));
     transactions.forEach((transaction) => {
-      const amount = roundMoney(transaction.amount * (transaction.exchangeRate || 1));
-      if (!(transaction.accountId in balances)) return;
+      const amount = baseMinor(transaction);
+      if (!(transaction.accountId in balancesMinor)) return;
       if (["income", "borrow", "collection"].includes(transaction.type)) {
-        balances[transaction.accountId] = roundMoney(balances[transaction.accountId] + amount);
+        balancesMinor[transaction.accountId] += amount;
       }
       if (["expense", "lend", "repayment"].includes(transaction.type)) {
-        balances[transaction.accountId] = roundMoney(balances[transaction.accountId] - amount);
+        balancesMinor[transaction.accountId] -= amount;
       }
       if (transaction.type === "transfer") {
-        balances[transaction.accountId] = roundMoney(balances[transaction.accountId] - amount);
-        if (transaction.targetAccountId in balances) {
-          balances[transaction.targetAccountId] = roundMoney(balances[transaction.targetAccountId] + amount);
+        balancesMinor[transaction.accountId] -= amount;
+        if (transaction.targetAccountId in balancesMinor) {
+          balancesMinor[transaction.targetAccountId] += amount;
         }
       }
     });
     activeRefunds(state).forEach((refund) => {
       const transaction = state.transactions.find((item) => item.id === refund.transactionId && !item.deletedAt);
-      if (!transaction || bookId && transaction.bookId !== bookId || !(refund.accountId in balances)) return;
-      const accountAmount = roundMoney(refund.accountAmount * (refund.exchangeRate || 1));
+      if (!transaction || bookId && transaction.bookId !== bookId || !(refund.accountId in balancesMinor)) return;
+      const accountAmount = baseMinor(refund, "accountAmount");
       if (transaction.type === "expense") {
-        balances[refund.accountId] = roundMoney(balances[refund.accountId] + accountAmount);
+        balancesMinor[refund.accountId] += accountAmount;
       }
       if (transaction.type === "income") {
-        balances[refund.accountId] = roundMoney(balances[refund.accountId] - accountAmount);
+        balancesMinor[refund.accountId] -= accountAmount;
       }
     });
-    return balances;
+    return Object.fromEntries(Object.entries(balancesMinor).map(([id, amount]) => [id, fromMinor(amount)]));
   }
   function calculateCreditAvailableLimit(state, accountId) {
     const account = state.accounts.find((item) => item.id === accountId && item.type === "credit" && !item.deletedAt);
@@ -1620,7 +1846,7 @@
   }
   function amountInAccountCurrency(state, transaction, account) {
     const accountRate = state.currencies.find((item) => item.code === account.currencyCode)?.rate || 1;
-    return roundMoney(transaction.amount * (transaction.exchangeRate || 1) / accountRate);
+    return fromMinor(Math.round(baseMinor(transaction) / accountRate));
   }
   function calculateCreditStatementSummary(state, accountId, asOfDate = formatLocalDate(/* @__PURE__ */ new Date())) {
     const account = state.accounts.find((item) => item.id === accountId && item.type === "credit" && !item.deletedAt);
@@ -1666,7 +1892,7 @@
       if (!source) return;
       const sourceStatementDate = creditStatementDateForPurchase(source.date, account.credit);
       const refundStatementDate = creditStatementDateForPurchase(refund.date, account.credit);
-      const amount = roundMoney(refund.accountAmount);
+      const amount = fromMinor(readMinor(refund, "accountAmount"));
       if (sourceStatementDate === refundStatementDate) {
         const statement = statementFor(sourceStatementDate);
         statement.sameCycleRefund = roundMoney(statement.sameCycleRefund + amount);
@@ -1751,20 +1977,27 @@
     }
     const account = state.accounts.find((item) => item.id === input.accountId);
     if (!accountAvailableInBook(account, bookId)) throw new Error("\u62A5\u9500\u5230\u8D26\u8D26\u6237\u4E0D\u53EF\u7528\u4E8E\u5F53\u524D\u8D26\u672C");
-    const expectedAmount = roundMoney(sources.reduce((total, item) => total + item.amount, 0));
-    const actualAmount = roundMoney(input.actualAmount);
-    if (actualAmount <= 0) throw new Error("\u5B9E\u9645\u5230\u8D26\u91D1\u989D\u5FC5\u987B\u5927\u4E8E 0");
-    const difference = roundMoney(actualAmount - expectedAmount);
+    const expectedAmountMinor = sources.reduce((total, item) => total + readMinor(item), 0);
+    const actualAmountMinor = readMinor(input, "actualAmount");
+    const expectedAmount = fromMinor(expectedAmountMinor);
+    const actualAmount = fromMinor(actualAmountMinor);
+    if (actualAmountMinor <= 0) throw new Error("\u5B9E\u9645\u5230\u8D26\u91D1\u989D\u5FC5\u987B\u5927\u4E8E 0");
+    const differenceMinor = actualAmountMinor - expectedAmountMinor;
     return {
       ...input,
       sourceTransactionIds,
       bookId,
       expectedAmount,
+      expectedAmountMinor,
       actualAmount,
+      actualAmountMinor,
       receiptAmount: expectedAmount,
-      differenceAmount: Math.abs(difference),
-      differenceType: difference > 0 ? "income" : difference < 0 ? "expense" : null,
-      allocations: Object.fromEntries(sources.map((item) => [item.id, roundMoney(item.amount)])),
+      receiptAmountMinor: expectedAmountMinor,
+      differenceAmount: fromMinor(Math.abs(differenceMinor)),
+      differenceAmountMinor: Math.abs(differenceMinor),
+      differenceType: differenceMinor > 0 ? "income" : differenceMinor < 0 ? "expense" : null,
+      allocations: Object.fromEntries(sources.map((item) => [item.id, fromMinor(readMinor(item))])),
+      allocationsMinor: Object.fromEntries(sources.map((item) => [item.id, readMinor(item)])),
       currencyCode,
       exchangeRate
     };
@@ -1775,8 +2008,9 @@
     return true;
   }
   function validateTransaction(input, state) {
-    const amount = roundMoney(input.amount);
-    if (amount <= 0) throw new Error("\u91D1\u989D\u5FC5\u987B\u5927\u4E8E 0");
+    const amountMinor = readMinor(input);
+    const amount = fromMinor(amountMinor);
+    if (amountMinor <= 0) throw new Error("\u91D1\u989D\u5FC5\u987B\u5927\u4E8E 0");
     const exchangeRate = Number(input.exchangeRate ?? 1);
     if (!(exchangeRate > 0)) throw new Error("\u6C47\u7387\u5FC5\u987B\u5927\u4E8E 0");
     if (!state.books.some((item) => item.id === input.bookId && !item.hidden)) throw new Error("\u8D26\u672C\u4E0D\u5B58\u5728\u6216\u5DF2\u9690\u85CF");
@@ -1789,7 +2023,20 @@
       if (!accountAvailableInBook(targetAccount, input.bookId)) throw new Error("\u8F6C\u5165\u8D26\u6237\u4E0D\u53EF\u7528\u4E8E\u5F53\u524D\u8D26\u672C");
     }
     if (!input.date || !/^\d{4}-\d{2}-\d{2}$/.test(input.date)) throw new Error("\u8BF7\u9009\u62E9\u6709\u6548\u65E5\u671F");
-    return { ...input, amount, exchangeRate };
+    const originalAmountMinor = input.originalAmount == null && input.originalAmountMinor == null ? amountMinor : readMinor(input, "originalAmount");
+    return {
+      ...input,
+      amount,
+      amountMinor,
+      originalAmount: fromMinor(originalAmountMinor),
+      originalAmountMinor,
+      memberShares: Array.isArray(input.memberShares) ? input.memberShares.map((share) => ({
+        ...share,
+        amount: fromMinor(readMinor(share)),
+        amountMinor: readMinor(share)
+      })) : input.memberShares,
+      exchangeRate
+    };
   }
 
   // src/native-webdav.mjs
@@ -2096,6 +2343,7 @@
     let transactionPhotos = [];
     let transactionLocation = null;
     let activeViewName = "home";
+    let activeRecordMode = "manual";
     let activeSettingsView = "ledger";
     let editingRefundId = null;
     function makeId(prefix) {
@@ -2128,6 +2376,7 @@
         state.metadata.dataUpdatedAt = (/* @__PURE__ */ new Date()).toISOString();
       }
       state.metadata.lastSavedAt = (/* @__PURE__ */ new Date()).toISOString();
+      state = normalizeState(state);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       renderAll();
       if (message) showToast(message);
@@ -2869,6 +3118,18 @@
         button.classList.toggle("is-active", button.dataset.settingsTab === target);
       });
     }
+    function switchRecordMode(mode = "manual") {
+      const target = mode === "quick" ? "quick" : "manual";
+      activeRecordMode = target;
+      document.querySelectorAll("[data-record-mode]").forEach((button) => {
+        const active = button.dataset.recordMode === target;
+        button.classList.toggle("is-active", active);
+        button.setAttribute("aria-selected", String(active));
+      });
+      document.querySelectorAll("[data-record-panel]").forEach((panel) => {
+        panel.classList.toggle("is-hidden", panel.dataset.recordPanel !== target);
+      });
+    }
     function navigateWithControl(control) {
       if (control.dataset.settingsPanel) switchSettingsView(control.dataset.settingsPanel);
       switchView(control.dataset.view || control.dataset.viewLink);
@@ -2884,6 +3145,7 @@
       document.querySelectorAll(".view").forEach((view) => view.classList.toggle("is-active", view.id === `view-${target}`));
       document.querySelectorAll(".bottom-nav .nav-item").forEach((item) => item.classList.toggle("is-active", item.dataset.view === target));
       elements.viewTitle.textContent = VIEW_TITLES[target];
+      if (target === "record") switchRecordMode("manual");
       window.scrollTo({ top: 0, behavior: "auto" });
     }
     function transactionFromForm() {
@@ -2934,6 +3196,7 @@
       elements.transactionLocationStatus.textContent = "\u672A\u8BB0\u5F55\u4F4D\u7F6E";
       elements.recordFormTitle.textContent = "\u8BB0\u5F55\u4E00\u7B14\u8D26";
       elements.cancelEditButton.classList.add("is-hidden");
+      elements.recordAdvanced.removeAttribute("open");
       updateTransferFields("transaction");
     }
     function editTransaction(id) {
@@ -3059,8 +3322,8 @@
       elements.refundDialog.showModal();
     }
     function openSettlementDialog(transactionIds) {
-      const ids = Array.isArray(transactionIds) ? transactionIds : [transactionIds];
-      const transactions = ids.map((id) => state.transactions.find((item) => item.id === id && !item.deletedAt)).filter(Boolean);
+      const ids2 = Array.isArray(transactionIds) ? transactionIds : [transactionIds];
+      const transactions = ids2.map((id) => state.transactions.find((item) => item.id === id && !item.deletedAt)).filter(Boolean);
       if (!transactions.length) return;
       const first = transactions[0];
       if (transactions.some((item) => item.bookId !== first.bookId)) return showToast("\u4E0D\u540C\u8D26\u672C\u4E0D\u80FD\u5408\u5E76\u7ED3\u7B97", true);
@@ -3084,8 +3347,8 @@
       elements.settlementDialog.showModal();
     }
     function openReimbursementDialog(transactionIds) {
-      const ids = Array.isArray(transactionIds) ? transactionIds : [transactionIds];
-      const sources = ids.map((id) => state.transactions.find((item) => item.id === id && !item.deletedAt)).filter(Boolean);
+      const ids2 = Array.isArray(transactionIds) ? transactionIds : [transactionIds];
+      const sources = ids2.map((id) => state.transactions.find((item) => item.id === id && !item.deletedAt)).filter(Boolean);
       if (!sources.length) return;
       const first = sources[0];
       if (sources.some((item) => item.type !== "expense" || item.reimburseStatus !== "pending")) {
@@ -3098,7 +3361,7 @@
       const accounts = availableAccounts(first.bookId);
       if (!accounts.length) return showToast("\u5F53\u524D\u8D26\u672C\u6CA1\u6709\u53EF\u7528\u5230\u8D26\u8D26\u6237", true);
       const expected = roundMoney(sources.reduce((total, item) => total + item.amount, 0));
-      elements.reimbursementTransactionIds.value = JSON.stringify(ids);
+      elements.reimbursementTransactionIds.value = JSON.stringify(ids2);
       elements.reimbursementSummary.textContent = `${sources.length} \u7B14 \xB7 \u5F85\u62A5\u9500 ${formatMoney(expected * (first.exchangeRate || 1))}`;
       elements.reimbursementActualAmount.value = String(expected);
       elements.reimbursementAccount.innerHTML = accounts.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
@@ -3289,7 +3552,6 @@
         updatedAt: now
       });
       elements.quickRecordInput.value = "";
-      elements.recordPageQuickInput.value = "";
       elements.parseDialog.close();
       if (candidateId) finishAutoBookingCandidate(candidateId, "confirmed");
       currentAutoBookingCandidateId = null;
@@ -3476,21 +3738,26 @@
       if (envelope.format !== "zhiji-encrypted-backup" || !envelope.salt || !envelope.iv || !envelope.data) {
         throw new Error("\u4E91\u7AEF\u6587\u4EF6\u683C\u5F0F\u4E0D\u53D7\u652F\u6301");
       }
+      let decrypted;
       try {
-        const salt = base64ToBytes(envelope.salt);
         const iv = base64ToBytes(envelope.iv);
-        const key = await deriveEncryptionKey(passphrase, salt, "decrypt");
-        const decrypted = await crypto.subtle.decrypt(
+        const key = await deriveEncryptionKey(passphrase, base64ToBytes(envelope.salt), "decrypt");
+        decrypted = await crypto.subtle.decrypt(
           { name: "AES-GCM", iv },
           key,
           base64ToBytes(envelope.data)
         );
-        const payload = JSON.parse(new TextDecoder().decode(decrypted));
-        if (payload.app !== "zhiji-local" || !payload.state) throw new Error("INVALID_BACKUP");
-        return normalizeState(payload.state);
       } catch {
         throw new Error("\u89E3\u5BC6\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5\u540C\u6B65\u5BC6\u94A5\u662F\u5426\u6B63\u786E");
       }
+      let payload;
+      try {
+        payload = JSON.parse(new TextDecoder().decode(decrypted));
+      } catch {
+        throw new Error("\u5907\u4EFD\u89E3\u5BC6\u6210\u529F\uFF0C\u4F46\u5185\u5BB9\u4E0D\u662F\u6709\u6548 JSON");
+      }
+      if (payload.app !== "zhiji-local" || !payload.state) throw new Error("\u5907\u4EFD\u5185\u5BB9\u4E0D\u662F\u667A\u8BB0\u5B8C\u6574\u8D26\u672C");
+      return prepareLedgerRestore(payload.state);
     }
     async function downloadRemoteState(config) {
       try {
@@ -3668,8 +3935,9 @@
       if (trimmed.startsWith("{")) {
         const parsed = JSON.parse(content);
         const candidate = parsed.app === "zhiji-local" && parsed.state ? parsed.state : parsed;
+        const restoredState = prepareLedgerRestore(candidate);
         if (!window.confirm("\u5BFC\u5165\u5B8C\u6574 JSON \u4F1A\u8986\u76D6\u5F53\u524D\u8BBE\u5907\u6570\u636E\uFF0C\u786E\u5B9A\u7EE7\u7EED\u5417\uFF1F")) return null;
-        state = normalizeState(candidate);
+        state = restoredState;
         saveState();
         return `\u5B8C\u6574\u6570\u636E\u5DF2\u6062\u590D\uFF0C\u5171 ${state.transactions.length} \u7B14\u8D26\u76EE`;
       }
@@ -3704,6 +3972,9 @@
       document.querySelectorAll("[data-settings-tab]").forEach((button) => {
         button.addEventListener("click", () => switchSettingsView(button.dataset.settingsTab));
       });
+      document.querySelectorAll("[data-record-mode]").forEach((button) => {
+        button.addEventListener("click", () => switchRecordMode(button.dataset.recordMode));
+      });
       document.addEventListener("keydown", (event) => {
         if (event.key === "Escape" && document.body.classList.contains("is-drawer-open")) closeDrawer();
       });
@@ -3711,12 +3982,7 @@
         event.preventDefault();
         openParseDialog(elements.quickRecordInput.value);
       });
-      elements.recordPageQuickForm.addEventListener("submit", (event) => {
-        event.preventDefault();
-        openParseDialog(elements.recordPageQuickInput.value);
-      });
       elements.voiceRecordButton.addEventListener("click", () => runVoiceInput(elements.voiceRecordButton, elements.quickRecordInput));
-      elements.recordPageVoiceButton.addEventListener("click", () => runVoiceInput(elements.recordPageVoiceButton, elements.recordPageQuickInput));
       elements.parseConfirmForm.addEventListener("submit", (event) => {
         event.preventDefault();
         if (event.submitter?.value === "cancel") {
@@ -4075,9 +4341,9 @@
         }
       });
       elements.batchReimbursement.addEventListener("click", () => {
-        const ids = [...elements.reimbursementList.querySelectorAll("input:checked")].map((item) => item.value);
-        if (!ids.length) return showToast("\u8BF7\u5148\u9009\u62E9\u5F85\u62A5\u9500\u660E\u7EC6", true);
-        openReimbursementDialog(ids);
+        const ids2 = [...elements.reimbursementList.querySelectorAll("input:checked")].map((item) => item.value);
+        if (!ids2.length) return showToast("\u8BF7\u5148\u9009\u62E9\u5F85\u62A5\u9500\u660E\u7EC6", true);
+        openReimbursementDialog(ids2);
       });
       elements.settlementForm.addEventListener("submit", (event) => {
         event.preventDefault();
@@ -4129,9 +4395,9 @@
         }
       });
       elements.batchSettlement.addEventListener("click", () => {
-        const ids = [...elements.pendingSettlementList.querySelectorAll("input:checked")].map((item) => item.value);
-        if (!ids.length) return showToast("\u8BF7\u5148\u9009\u62E9\u8981\u7ED3\u7B97\u7684\u5E94\u6536\u6216\u5E94\u4ED8\u660E\u7EC6", true);
-        openSettlementDialog(ids);
+        const ids2 = [...elements.pendingSettlementList.querySelectorAll("input:checked")].map((item) => item.value);
+        if (!ids2.length) return showToast("\u8BF7\u5148\u9009\u62E9\u8981\u7ED3\u7B97\u7684\u5E94\u6536\u6216\u5E94\u4ED8\u660E\u7EC6", true);
+        openSettlementDialog(ids2);
       });
       elements.statsMonth.addEventListener("change", renderStats);
       elements.searchForm.addEventListener("submit", (event) => event.preventDefault());
@@ -4152,7 +4418,7 @@
       });
       elements.budgetForm.addEventListener("submit", (event) => {
         event.preventDefault();
-        activeBook().monthlyBudget = Math.max(0, Number(elements.monthlyBudget.value) || 0);
+        writeMoney(activeBook(), "monthlyBudget", Math.max(0, Number(elements.monthlyBudget.value) || 0));
         saveState("\u6708\u9884\u7B97\u5DF2\u66F4\u65B0");
       });
       elements.categoryBudgetForm.addEventListener("submit", (event) => {
@@ -4161,7 +4427,7 @@
         const amount = Math.round(Number(elements.budgetAmount.value) * 100) / 100;
         if (!(amount > 0)) return showToast("\u9884\u7B97\u91D1\u989D\u5FC5\u987B\u5927\u4E8E 0", true);
         const existing = state.budgets.find((item) => item.bookId === state.activeBookId && item.kind === "category" && item.categoryId === categoryId);
-        if (existing) existing.amount = amount;
+        if (existing) writeMoney(existing, "amount", amount);
         else state.budgets.push({ id: makeId("budget"), bookId: state.activeBookId, kind: "category", categoryId, amount, period: "monthly", createdAt: (/* @__PURE__ */ new Date()).toISOString() });
         elements.budgetAmount.value = "";
         saveState(existing ? "\u5206\u7C7B\u9884\u7B97\u5DF2\u66F4\u65B0" : "\u5206\u7C7B\u9884\u7B97\u5DF2\u65B0\u589E");
@@ -4267,7 +4533,7 @@
           const goal = state.budgets.find((item) => item.id === goalId);
           const amount = Number(window.prompt("\u672C\u6B21\u5B58\u5165\u91D1\u989D", "100"));
           if (!goal || !(amount > 0)) return;
-          goal.currentAmount = Math.min(goal.targetAmount, Math.round((goal.currentAmount + amount) * 100) / 100);
+          writeMoney(goal, "currentAmount", Math.min(goal.targetAmount, roundMoney(goal.currentAmount + amount)));
           saveState("\u76EE\u6807\u8FDB\u5EA6\u5DF2\u66F4\u65B0");
         } else if (action === "delete-schedule") {
           state.schedules = state.schedules.filter((item) => item.id !== scheduleId);

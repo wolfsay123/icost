@@ -1,7 +1,11 @@
-const MONEY_SCALE = 100;
+import { convertMinor, fromMinor, readMinor, toMinor } from "./money.mjs";
 
 export function roundMoney(value) {
-  return Math.round((Number(value) || 0) * MONEY_SCALE) / MONEY_SCALE;
+  return fromMinor(toMinor(value));
+}
+
+function baseMinor(record, field = "amount") {
+  return convertMinor(readMinor(record, field), record?.exchangeRate || 1);
 }
 
 function formatLocalDate(date) {
@@ -130,7 +134,7 @@ export function savingsPlanAmount(plan, period) {
   const number = Number(period);
   const totalPeriods = Number(plan?.totalPeriods);
   if (!Number.isInteger(number) || number < 1 || number > totalPeriods) throw new Error("存钱计划期次无效");
-  return roundMoney(Number(plan.startAmount) + Number(plan.incrementAmount || 0) * (number - 1));
+  return fromMinor(readMinor(plan, "startAmount") + readMinor(plan, "incrementAmount") * (number - 1));
 }
 
 export function validateSavingsPlan(input, state) {
@@ -138,8 +142,10 @@ export function validateSavingsPlan(input, state) {
   const fixedPreset = ["daily365", "weekly52"].includes(input.template);
   const frequency = fixedPreset ? preset.frequency : input.frequency || preset.frequency;
   const totalPeriods = Number(fixedPreset ? preset.totalPeriods : input.totalPeriods ?? preset.totalPeriods);
-  const startAmount = roundMoney(fixedPreset ? preset.startAmount : input.startAmount ?? preset.startAmount);
-  const incrementAmount = roundMoney(fixedPreset ? preset.incrementAmount : input.incrementAmount ?? preset.incrementAmount);
+  const startAmountMinor = toMinor(fixedPreset ? preset.startAmount : input.startAmount ?? preset.startAmount);
+  const incrementAmountMinor = toMinor(fixedPreset ? preset.incrementAmount : input.incrementAmount ?? preset.incrementAmount);
+  const startAmount = fromMinor(startAmountMinor);
+  const incrementAmount = fromMinor(incrementAmountMinor);
   if (!["daily", "weekly", "monthly"].includes(frequency)) throw new Error("存钱周期无效");
   if (!Number.isInteger(totalPeriods) || totalPeriods < 1 || totalPeriods > 1000) throw new Error("存钱期数必须为 1 到 1000");
   if (startAmount <= 0) throw new Error("首期金额必须大于 0");
@@ -153,7 +159,9 @@ export function validateSavingsPlan(input, state) {
   }
   if (source.id === target.id) throw new Error("转出账户和存款账户不能相同");
   if (source.currencyCode !== target.currencyCode) throw new Error("存钱计划暂只支持同币种账户");
-  const targetAmount = roundMoney(totalPeriods * (startAmount * 2 + (totalPeriods - 1) * incrementAmount) / 2);
+  const targetAmountMinor = totalPeriods * (startAmountMinor * 2 + (totalPeriods - 1) * incrementAmountMinor) / 2;
+  if (!Number.isSafeInteger(targetAmountMinor)) throw new Error("存钱计划总额超出支持范围");
+  const targetAmount = fromMinor(targetAmountMinor);
   return {
     template: input.template || "custom",
     bookId: input.bookId,
@@ -165,8 +173,11 @@ export function validateSavingsPlan(input, state) {
     frequency,
     totalPeriods,
     startAmount,
+    startAmountMinor,
     incrementAmount,
+    incrementAmountMinor,
     targetAmount,
+    targetAmountMinor,
     status: input.status === "paused" ? "paused" : "active",
   };
 }
@@ -192,13 +203,15 @@ export function savingsPlanProgress(state, plan) {
       break;
     }
   }
-  const savedAmount = roundMoney([...completed.values()].reduce((sum, item) => sum + Number(item.amount || 0), 0));
-  const targetAmount = roundMoney(plan.targetAmount);
+  const savedAmountMinor = [...completed.values()].reduce((sum, item) => sum + readMinor(item), 0);
+  const targetAmountMinor = readMinor(plan, "targetAmount");
+  const savedAmount = fromMinor(savedAmountMinor);
+  const targetAmount = fromMinor(targetAmountMinor);
   return {
     completedPeriods: completed.size,
     savedAmount,
     targetAmount,
-    percentage: targetAmount > 0 ? Math.min(100, Math.round(savedAmount / targetAmount * 100)) : 0,
+    percentage: targetAmountMinor > 0 ? Math.min(100, Math.round(savedAmountMinor / targetAmountMinor * 100)) : 0,
     nextPeriod,
     nextAmount: nextPeriod ? savingsPlanAmount(plan, nextPeriod) : 0,
     nextDate: nextPeriod ? savingsPlanDateAt(plan.startDate, plan.frequency, nextPeriod - 1) : null,
@@ -207,13 +220,13 @@ export function savingsPlanProgress(state, plan) {
 }
 
 export function installmentAmount(totalAmount, periods, paidPeriods) {
-  const total = roundMoney(totalAmount);
+  const totalMinor = toMinor(totalAmount);
   const count = Number(periods);
   const paid = Number(paidPeriods);
-  if (total <= 0 || !Number.isInteger(count) || count < 2) throw new Error("分期参数无效");
+  if (totalMinor <= 0 || !Number.isInteger(count) || count < 2) throw new Error("分期参数无效");
   if (!Number.isInteger(paid) || paid < 0 || paid >= count) throw new Error("分期期数已完成或无效");
-  const regular = roundMoney(total / count);
-  return paid === count - 1 ? roundMoney(total - regular * (count - 1)) : regular;
+  const regularMinor = Math.round(totalMinor / count);
+  return fromMinor(paid === count - 1 ? totalMinor - regularMinor * (count - 1) : regularMinor);
 }
 
 export function activeTransactions(state, bookId = state.activeBookId) {
@@ -235,34 +248,41 @@ export function activeRefunds(state, transactionId = null) {
 }
 
 export function refundedAmount(state, transactionId) {
-  return roundMoney(activeRefunds(state, transactionId)
-    .reduce((total, item) => total + Number(item.amount || 0), 0));
+  return fromMinor(activeRefunds(state, transactionId).reduce((total, item) => total + readMinor(item), 0));
 }
 
 export function validateRefund(input, state) {
   const transaction = state.transactions.find((item) => item.id === input.transactionId && !item.deletedAt);
   if (!transaction) throw new Error("原明细不存在");
   if (!["expense", "income"].includes(transaction.type)) throw new Error("仅收支明细支持退款");
-  const amount = roundMoney(input.amount);
-  if (amount <= 0) throw new Error("退款金额必须大于 0");
+  const amountMinor = readMinor(input);
+  const amount = fromMinor(amountMinor);
+  if (amountMinor <= 0) throw new Error("退款金额必须大于 0");
   const editingRefund = input.refundId
     ? activeRefunds(state, transaction.id).find((item) => item.id === input.refundId)
     : null;
-  const existingAmount = roundMoney(refundedAmount(state, transaction.id) - Number(editingRefund?.amount || 0));
-  if (roundMoney(existingAmount + amount) > roundMoney(transaction.amount)) {
+  const existingAmountMinor = activeRefunds(state, transaction.id)
+    .filter((item) => item.id !== editingRefund?.id)
+    .reduce((total, item) => total + readMinor(item), 0);
+  if (existingAmountMinor + amountMinor > readMinor(transaction)) {
     throw new Error("累计退款金额不能超过原明细金额");
   }
   const account = state.accounts.find((item) => item.id === input.accountId);
   if (!accountAvailableInBook(account, transaction.bookId)) throw new Error("退款账户不可用于当前账本");
-  const accountAmount = roundMoney(input.accountAmount ?? amount);
-  if (accountAmount <= 0) throw new Error("退款折合金额必须大于 0");
+  const accountAmountMinor = input.accountAmount == null && input.accountAmountMinor == null
+    ? amountMinor
+    : readMinor(input, "accountAmount");
+  const accountAmount = fromMinor(accountAmountMinor);
+  if (accountAmountMinor <= 0) throw new Error("退款折合金额必须大于 0");
   const accountCurrencyCode = input.currencyCode || account.currencyCode || transaction.currencyCode;
   const accountExchangeRate = Number(input.exchangeRate ?? state.currencies.find((item) => item.code === accountCurrencyCode)?.rate ?? 1);
   if (!(accountExchangeRate > 0)) throw new Error("退款账户汇率必须大于 0");
   const result = {
     ...input,
     amount,
+    amountMinor,
     accountAmount,
+    accountAmountMinor,
     currencyCode: accountCurrencyCode,
     exchangeRate: accountExchangeRate,
   };
@@ -271,18 +291,21 @@ export function validateRefund(input, state) {
 }
 
 export function settledAmount(state, transactionId) {
-  return roundMoney((state.settlements || [])
+  const minor = (state.settlements || [])
     .filter((item) => !item.deletedAt && item.sourceTransactionIds?.includes(transactionId))
     .reduce((total, item) => {
-      const fallback = item.sourceTransactionIds.length === 1 ? item.amount : 0;
-      return total + Number(item.allocations?.[transactionId] ?? fallback ?? 0);
-    }, 0));
+      const allocationMinor = Number(item.allocationsMinor?.[transactionId]);
+      if (Number.isSafeInteger(allocationMinor)) return total + allocationMinor;
+      const fallback = item.sourceTransactionIds.length === 1 ? readMinor(item) : 0;
+      return total + toMinor(item.allocations?.[transactionId], fallback);
+    }, 0);
+  return fromMinor(minor);
 }
 
 export function remainingSettlementAmount(state, transactionId) {
   const transaction = state.transactions.find((item) => item.id === transactionId && !item.deletedAt);
   if (!transaction || !["payable", "receivable"].includes(transaction.type)) return 0;
-  return roundMoney(Math.max(0, transaction.amount - settledAmount(state, transactionId)));
+  return fromMinor(Math.max(0, readMinor(transaction) - toMinor(settledAmount(state, transactionId))));
 }
 
 export function validateSettlement(input, state) {
@@ -301,19 +324,24 @@ export function validateSettlement(input, state) {
   if (sources.some((item) => item.currencyCode !== currencyCode || Number(item.exchangeRate || 1) !== exchangeRate)) {
     throw new Error("不同币种或汇率的明细不能合并结算");
   }
-  const amount = roundMoney(input.amount);
-  const remaining = roundMoney(sourceTransactionIds
-    .reduce((total, id) => total + remainingSettlementAmount(state, id), 0));
-  if (amount <= 0) throw new Error("结算金额必须大于 0");
-  if (amount > remaining) throw new Error("结算金额不能超过待结算金额");
+  const amountMinor = readMinor(input);
+  const amount = fromMinor(amountMinor);
+  const remainingMinor = sourceTransactionIds
+    .reduce((total, id) => total + toMinor(remainingSettlementAmount(state, id)), 0);
+  if (amountMinor <= 0) throw new Error("结算金额必须大于 0");
+  if (amountMinor > remainingMinor) throw new Error("结算金额不能超过待结算金额");
   const account = state.accounts.find((item) => item.id === input.accountId);
   if (!accountAvailableInBook(account, bookId)) throw new Error("结算账户不可用于当前账本");
-  let amountLeft = amount;
+  let amountLeftMinor = amountMinor;
   const allocations = {};
+  const allocationsMinor = {};
   sourceTransactionIds.forEach((id) => {
-    const allocation = roundMoney(Math.min(amountLeft, remainingSettlementAmount(state, id)));
-    if (allocation > 0) allocations[id] = allocation;
-    amountLeft = roundMoney(amountLeft - allocation);
+    const allocationMinor = Math.min(amountLeftMinor, toMinor(remainingSettlementAmount(state, id)));
+    if (allocationMinor > 0) {
+      allocations[id] = fromMinor(allocationMinor);
+      allocationsMinor[id] = allocationMinor;
+    }
+    amountLeftMinor -= allocationMinor;
   });
   return {
     ...input,
@@ -322,17 +350,19 @@ export function validateSettlement(input, state) {
     currencyCode,
     exchangeRate,
     amount,
+    amountMinor,
     allocations,
+    allocationsMinor,
     transactionType: type === "payable" ? "expense" : "income",
   };
 }
 
 export function calculateAccountBalances(state, bookId = null) {
   const currencyRates = Object.fromEntries((state.currencies || []).map((currency) => [currency.code, currency.rate || 1]));
-  const balances = Object.fromEntries(state.accounts
+  const balancesMinor = Object.fromEntries(state.accounts
     .filter((account) => !account.deletedAt)
     .map((account) => {
-      const initial = roundMoney(account.initialBalance * (currencyRates[account.currencyCode] || 1));
+      const initial = convertMinor(readMinor(account, "initialBalance"), currencyRates[account.currencyCode] || 1);
       return [account.id, account.type === "credit" ? -initial : initial];
     }));
   const transactions = state.transactions.filter((item) => (
@@ -342,35 +372,35 @@ export function calculateAccountBalances(state, bookId = null) {
   ));
 
   transactions.forEach((transaction) => {
-    const amount = roundMoney(transaction.amount * (transaction.exchangeRate || 1));
-    if (!(transaction.accountId in balances)) return;
+    const amount = baseMinor(transaction);
+    if (!(transaction.accountId in balancesMinor)) return;
 
     if (["income", "borrow", "collection"].includes(transaction.type)) {
-      balances[transaction.accountId] = roundMoney(balances[transaction.accountId] + amount);
+      balancesMinor[transaction.accountId] += amount;
     }
     if (["expense", "lend", "repayment"].includes(transaction.type)) {
-      balances[transaction.accountId] = roundMoney(balances[transaction.accountId] - amount);
+      balancesMinor[transaction.accountId] -= amount;
     }
     if (transaction.type === "transfer") {
-      balances[transaction.accountId] = roundMoney(balances[transaction.accountId] - amount);
-      if (transaction.targetAccountId in balances) {
-        balances[transaction.targetAccountId] = roundMoney(balances[transaction.targetAccountId] + amount);
+      balancesMinor[transaction.accountId] -= amount;
+      if (transaction.targetAccountId in balancesMinor) {
+        balancesMinor[transaction.targetAccountId] += amount;
       }
     }
   });
 
   activeRefunds(state).forEach((refund) => {
     const transaction = state.transactions.find((item) => item.id === refund.transactionId && !item.deletedAt);
-    if (!transaction || (bookId && transaction.bookId !== bookId) || !(refund.accountId in balances)) return;
-    const accountAmount = roundMoney(refund.accountAmount * (refund.exchangeRate || 1));
+    if (!transaction || (bookId && transaction.bookId !== bookId) || !(refund.accountId in balancesMinor)) return;
+    const accountAmount = baseMinor(refund, "accountAmount");
     if (transaction.type === "expense") {
-      balances[refund.accountId] = roundMoney(balances[refund.accountId] + accountAmount);
+      balancesMinor[refund.accountId] += accountAmount;
     }
     if (transaction.type === "income") {
-      balances[refund.accountId] = roundMoney(balances[refund.accountId] - accountAmount);
+      balancesMinor[refund.accountId] -= accountAmount;
     }
   });
-  return balances;
+  return Object.fromEntries(Object.entries(balancesMinor).map(([id, amount]) => [id, fromMinor(amount)]));
 }
 
 export function calculateCreditAvailableLimit(state, accountId) {
@@ -399,7 +429,7 @@ export function calculateCreditAvailableLimit(state, accountId) {
 
 function amountInAccountCurrency(state, transaction, account) {
   const accountRate = state.currencies.find((item) => item.code === account.currencyCode)?.rate || 1;
-  return roundMoney(transaction.amount * (transaction.exchangeRate || 1) / accountRate);
+  return fromMinor(Math.round(baseMinor(transaction) / accountRate));
 }
 
 export function calculateCreditStatementSummary(state, accountId, asOfDate = formatLocalDate(new Date())) {
@@ -451,7 +481,7 @@ export function calculateCreditStatementSummary(state, accountId, asOfDate = for
     if (!source) return;
     const sourceStatementDate = creditStatementDateForPurchase(source.date, account.credit);
     const refundStatementDate = creditStatementDateForPurchase(refund.date, account.credit);
-    const amount = roundMoney(refund.accountAmount);
+    const amount = fromMinor(readMinor(refund, "accountAmount"));
     if (sourceStatementDate === refundStatementDate) {
       const statement = statementFor(sourceStatementDate);
       statement.sameCycleRefund = roundMoney(statement.sameCycleRefund + amount);
@@ -542,20 +572,27 @@ export function validateReimbursement(input, state) {
   }
   const account = state.accounts.find((item) => item.id === input.accountId);
   if (!accountAvailableInBook(account, bookId)) throw new Error("报销到账账户不可用于当前账本");
-  const expectedAmount = roundMoney(sources.reduce((total, item) => total + item.amount, 0));
-  const actualAmount = roundMoney(input.actualAmount);
-  if (actualAmount <= 0) throw new Error("实际到账金额必须大于 0");
-  const difference = roundMoney(actualAmount - expectedAmount);
+  const expectedAmountMinor = sources.reduce((total, item) => total + readMinor(item), 0);
+  const actualAmountMinor = readMinor(input, "actualAmount");
+  const expectedAmount = fromMinor(expectedAmountMinor);
+  const actualAmount = fromMinor(actualAmountMinor);
+  if (actualAmountMinor <= 0) throw new Error("实际到账金额必须大于 0");
+  const differenceMinor = actualAmountMinor - expectedAmountMinor;
   return {
     ...input,
     sourceTransactionIds,
     bookId,
     expectedAmount,
+    expectedAmountMinor,
     actualAmount,
+    actualAmountMinor,
     receiptAmount: expectedAmount,
-    differenceAmount: Math.abs(difference),
-    differenceType: difference > 0 ? "income" : difference < 0 ? "expense" : null,
-    allocations: Object.fromEntries(sources.map((item) => [item.id, roundMoney(item.amount)])),
+    receiptAmountMinor: expectedAmountMinor,
+    differenceAmount: fromMinor(Math.abs(differenceMinor)),
+    differenceAmountMinor: Math.abs(differenceMinor),
+    differenceType: differenceMinor > 0 ? "income" : differenceMinor < 0 ? "expense" : null,
+    allocations: Object.fromEntries(sources.map((item) => [item.id, fromMinor(readMinor(item))])),
+    allocationsMinor: Object.fromEntries(sources.map((item) => [item.id, readMinor(item)])),
     currencyCode,
     exchangeRate,
   };
@@ -574,41 +611,44 @@ export function calculateBookSummary(state, options = {}) {
   const transactions = activeTransactions(state, bookId).filter((item) => (
     item.date >= dateFrom && item.date <= dateTo && item.status !== "pending"
   ));
-  const sum = (type) => roundMoney(transactions
+  const sumMinor = (type) => transactions
     .filter((item) => item.type === type && transactionIncludedInOrdinaryStats(item))
-    .reduce((total, item) => total + item.amount * (item.exchangeRate || 1), 0));
+    .reduce((total, item) => total + baseMinor(item), 0);
 
-  const refundSum = (type) => roundMoney(activeRefunds(state)
+  const refundSumMinor = (type) => activeRefunds(state)
     .filter((refund) => refund.date >= dateFrom && refund.date <= dateTo)
     .reduce((total, refund) => {
       const transaction = activeTransactions(state, bookId).find((item) => (
         item.id === refund.transactionId && item.type === type && transactionIncludedInOrdinaryStats(item)
       ));
-      return transaction ? total + refund.amount * (transaction.exchangeRate || 1) : total;
-    }, 0));
-  const income = roundMoney(sum("income") - refundSum("income"));
-  const expense = roundMoney(sum("expense") - refundSum("expense"));
+      return transaction ? total + convertMinor(readMinor(refund), transaction.exchangeRate || 1) : total;
+    }, 0);
+  const incomeMinor = sumMinor("income") - refundSumMinor("income");
+  const expenseMinor = sumMinor("expense") - refundSumMinor("expense");
+  const income = fromMinor(incomeMinor);
+  const expense = fromMinor(expenseMinor);
   return {
     income,
     expense,
-    balance: roundMoney(income - expense),
-    borrowed: sum("borrow"),
-    lent: sum("lend"),
-    repaid: sum("repayment"),
-    collected: sum("collection"),
-    pendingPayable: roundMoney(activeTransactions(state, bookId)
+    balance: fromMinor(incomeMinor - expenseMinor),
+    borrowed: fromMinor(sumMinor("borrow")),
+    lent: fromMinor(sumMinor("lend")),
+    repaid: fromMinor(sumMinor("repayment")),
+    collected: fromMinor(sumMinor("collection")),
+    pendingPayable: fromMinor(activeTransactions(state, bookId)
       .filter((item) => item.type === "payable" && item.status === "pending")
-      .reduce((total, item) => total + item.amount * (item.exchangeRate || 1), 0)),
-    pendingReceivable: roundMoney(activeTransactions(state, bookId)
+      .reduce((total, item) => total + baseMinor(item), 0)),
+    pendingReceivable: fromMinor(activeTransactions(state, bookId)
       .filter((item) => item.type === "receivable" && item.status === "pending")
-      .reduce((total, item) => total + item.amount * (item.exchangeRate || 1), 0)),
+      .reduce((total, item) => total + baseMinor(item), 0)),
     count: transactions.length,
   };
 }
 
 export function validateTransaction(input, state) {
-  const amount = roundMoney(input.amount);
-  if (amount <= 0) throw new Error("金额必须大于 0");
+  const amountMinor = readMinor(input);
+  const amount = fromMinor(amountMinor);
+  if (amountMinor <= 0) throw new Error("金额必须大于 0");
   const exchangeRate = Number(input.exchangeRate ?? 1);
   if (!(exchangeRate > 0)) throw new Error("汇率必须大于 0");
   if (!state.books.some((item) => item.id === input.bookId && !item.hidden)) throw new Error("账本不存在或已隐藏");
@@ -621,5 +661,20 @@ export function validateTransaction(input, state) {
     if (!accountAvailableInBook(targetAccount, input.bookId)) throw new Error("转入账户不可用于当前账本");
   }
   if (!input.date || !/^\d{4}-\d{2}-\d{2}$/.test(input.date)) throw new Error("请选择有效日期");
-  return { ...input, amount, exchangeRate };
+  const originalAmountMinor = input.originalAmount == null && input.originalAmountMinor == null
+    ? amountMinor
+    : readMinor(input, "originalAmount");
+  return {
+    ...input,
+    amount,
+    amountMinor,
+    originalAmount: fromMinor(originalAmountMinor),
+    originalAmountMinor,
+    memberShares: Array.isArray(input.memberShares) ? input.memberShares.map((share) => ({
+      ...share,
+      amount: fromMinor(readMinor(share)),
+      amountMinor: readMinor(share),
+    })) : input.memberShares,
+    exchangeRate,
+  };
 }

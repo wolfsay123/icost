@@ -18,8 +18,8 @@
 | 项目 | 当前状态 | 证据 |
 | --- | --- | --- |
 | 目标样本 | `com.cxincx.xxjz` 4.0.8，SHA-256 `c18d86841d455c699c168b85ae8e6e0f2cf31db317ba3e827ddbefaa43d16f32` | `docs/REFERENCE_AUDIT.md` |
-| 智记版本 | `com.zhiji.local` 0.8.0，数据模型 v5 | `package.json`、`src/ledger-schema.mjs` |
-| 自动测试 | `npm run check` 为 29/29；Android 自动候选解析为 5/5；新版 UI 在 375x812、412x915、1440x1000 完成首页、抽屉、账户、报表、设置和记账链路 | `tests/`、`docs/screenshots/acceptance-v8-home-mobile.png` |
+| 智记版本 | `com.zhiji.local` 0.9.0，数据模型 v6 | `package.json`、`src/ledger-schema.mjs` |
+| 自动测试 | `npm run check` 为 34/34；覆盖整数金额、v1-v5 迁移、恢复闸门与既有财务规则；记账页继续沿用 0.8.2 已验收排版 | `tests/`、`docs/screenshots/acceptance-v82-record-manual-mobile.jpg` |
 | 坚果云 | 本地模拟 WebDAV 已闭环；真实坚果云账号和跨设备恢复未验 | `docs/ACCEPTANCE.md` |
 | Android | Debug APK 已构建验签；系统能力和目标 APK 均未完成真机动态对照 | `docs/ANDROID.md` |
 
@@ -73,7 +73,7 @@
 
 阻塞项：Android 36 ARM 镜像需要单独接受 `android-sdk-arm-dbt-license`。只有用户明确回复“同意 ARM DBT 许可”后才可安装。
 
-### 阶段 B：财务内核与数据模型 v5
+### 阶段 B：财务内核与数据模型 v6
 
 1. 为账户范围、退款子记录、结算关系、严格报销关系、信用账期、存钱计划和生成任务来源定义 v5 数据契约。
 2. 实现 v1/v2/v3/v4 -> v5 幂等迁移，保留现有账本、明细、附件、同步修订号和回收站数据。

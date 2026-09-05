@@ -1,5 +1,7 @@
+import { moneyFields, readMinor, toMinor } from "./money.mjs";
+
 export const STORAGE_KEY = "zhiji.local.v1";
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 export const DEFAULT_BOOK_ID = "book-default";
 export const DEFAULT_CURRENCY = "CNY";
 
@@ -60,6 +62,25 @@ function finiteNumber(value, fallback = 0) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+function normalizedMoney(record, field, fallback = 0, minimumMinor = null) {
+  const pair = moneyFields(record?.[field], record?.[`${field}Minor`], toMinor(fallback));
+  if (minimumMinor != null && pair.minor < minimumMinor) {
+    return { [field]: minimumMinor / 100, [`${field}Minor`]: minimumMinor };
+  }
+  return { [field]: pair.value, [`${field}Minor`]: pair.minor };
+}
+
+function normalizedAllocations(record) {
+  const major = record?.allocations && typeof record.allocations === "object" ? record.allocations : {};
+  const minor = record?.allocationsMinor && typeof record.allocationsMinor === "object" ? record.allocationsMinor : {};
+  const ids = new Set([...Object.keys(major), ...Object.keys(minor)]);
+  const pairs = [...ids].map((id) => [id, moneyFields(major[id], minor[id])]);
+  return {
+    allocations: Object.fromEntries(pairs.filter(([id, pair]) => id && pair.minor > 0).map(([id, pair]) => [id, pair.value])),
+    allocationsMinor: Object.fromEntries(pairs.filter(([id, pair]) => id && pair.minor > 0).map(([id, pair]) => [id, pair.minor])),
+  };
+}
+
 function categoryKind(item) {
   if (["expense", "income", "transfer"].includes(item.kind)) return item.kind;
   if (["工资", "奖金"].includes(item.name)) return "income";
@@ -81,6 +102,7 @@ export function createDefaultLedger(now = new Date().toISOString()) {
     baseCurrency: DEFAULT_CURRENCY,
     settings: {
       monthlyBudget: 5000,
+      monthlyBudgetMinor: 500000,
       weekStartsOn: 1,
       monthStartsOn: 1,
       amountHidden: false,
@@ -91,6 +113,7 @@ export function createDefaultLedger(now = new Date().toISOString()) {
       color: "#1f6650",
       icon: "ledger",
       monthlyBudget: 5000,
+      monthlyBudgetMinor: 500000,
       hidden: false,
       order: 0,
       createdAt: now,
@@ -105,6 +128,7 @@ export function createDefaultLedger(now = new Date().toISOString()) {
     })),
     accounts: DEFAULT_ACCOUNTS.map((item, order) => ({
       ...item,
+      initialBalanceMinor: 0,
       bookIds: [DEFAULT_BOOK_ID],
       currencyCode: DEFAULT_CURRENCY,
       includeInNetAssets: true,
@@ -155,19 +179,16 @@ export function normalizeLedger(raw, now = new Date().toISOString()) {
       ? raw.books.filter(validEntity).map((book, order) => ({
         ...book,
         name: String(book.name || `账本 ${order + 1}`),
-        monthlyBudget: Math.max(0, finiteNumber(
-          book.monthlyBudget,
-          book.id === (raw.activeBookId || DEFAULT_BOOK_ID)
-            ? raw.settings?.monthlyBudget
-            : fallback.settings.monthlyBudget,
-        )),
+        ...normalizedMoney(book, "monthlyBudget", book.id === (raw.activeBookId || DEFAULT_BOOK_ID)
+          ? raw.settings?.monthlyBudget
+          : fallback.settings.monthlyBudget, 0),
         hidden: Boolean(book.hidden),
         order: finiteNumber(book.order, order),
         createdAt: book.createdAt || raw.metadata?.createdAt || now,
       }))
     : fallback.books.map((book) => ({
         ...book,
-        monthlyBudget: Math.max(0, finiteNumber(raw.settings?.monthlyBudget, book.monthlyBudget)),
+        ...normalizedMoney(raw.settings, "monthlyBudget", book.monthlyBudget, 0),
       }));
   const requestedBookId = raw.activeBookId || DEFAULT_BOOK_ID;
   const activeBookId = books.some((book) => book.id === requestedBookId) ? requestedBookId : books[0].id;
@@ -191,7 +212,7 @@ export function normalizeLedger(raw, now = new Date().toISOString()) {
         ...item,
         name: String(item.name),
         type: accountType(item),
-        initialBalance: finiteNumber(item.initialBalance),
+        ...normalizedMoney(item, "initialBalance"),
         bookIds: Array.isArray(item.bookIds) && item.bookIds.length
           ? [...new Set(item.bookIds.filter((bookId) => books.some((book) => book.id === bookId)))]
           : books.map((book) => book.id),
@@ -201,7 +222,7 @@ export function normalizeLedger(raw, now = new Date().toISOString()) {
         order: finiteNumber(item.order, order),
         credit: item.credit && typeof item.credit === "object" ? {
           ...item.credit,
-          limit: Math.max(0, finiteNumber(item.credit.limit)),
+          ...normalizedMoney(item.credit, "limit", 0, 0),
           billingDay: item.credit.billingDay == null ? null : finiteNumber(item.credit.billingDay),
           billingDayInNextCycle: Boolean(item.credit.billingDayInNextCycle),
           repaymentType: item.credit.repaymentType === "delay" ? "delay" : "fixed",
@@ -219,7 +240,7 @@ export function normalizeLedger(raw, now = new Date().toISOString()) {
         balanceReminder: item.balanceReminder && typeof item.balanceReminder === "object" ? {
           enabled: Boolean(item.balanceReminder.enabled),
           direction: item.balanceReminder.direction === "above" ? "above" : "below",
-          amount: Math.max(0, finiteNumber(item.balanceReminder.amount)),
+          ...normalizedMoney(item.balanceReminder, "amount", 0, 0),
         } : null,
         deletedAt: item.deletedAt || null,
       }))
@@ -229,21 +250,24 @@ export function normalizeLedger(raw, now = new Date().toISOString()) {
     ? raw.transactions.filter((item) => (
         validEntity(item)
         && TRANSACTION_TYPES.has(item.type)
-        && finiteNumber(item.amount) > 0
+        && readMinor(item) > 0
         && item.accountId
         && item.date
       )).map((item) => ({
         ...item,
         bookId: item.bookId || activeBookId,
-        amount: finiteNumber(item.amount),
-        originalAmount: finiteNumber(item.originalAmount, finiteNumber(item.amount)),
+        ...normalizedMoney(item, "amount"),
+        ...normalizedMoney(item, "originalAmount", moneyFields(item.amount, item.amountMinor).value),
         currencyCode: item.currencyCode || raw.baseCurrency || DEFAULT_CURRENCY,
         exchangeRate: finiteNumber(item.exchangeRate, 1) || 1,
         targetAccountId: item.targetAccountId || null,
         categoryId: item.categoryId || null,
         tagIds: Array.isArray(item.tagIds) ? item.tagIds : [],
         merchantId: item.merchantId || null,
-        memberShares: Array.isArray(item.memberShares) ? item.memberShares : [],
+        memberShares: Array.isArray(item.memberShares) ? item.memberShares.map((share) => ({
+          ...share,
+          ...normalizedMoney(share, "amount"),
+        })) : [],
         time: item.time || "12:00",
         note: String(item.note || ""),
         status: item.status || "posted",
@@ -269,12 +293,12 @@ export function normalizeLedger(raw, now = new Date().toISOString()) {
         validEntity(item)
         && item.transactionId
         && item.accountId
-        && finiteNumber(item.amount) > 0
+        && readMinor(item) > 0
         && item.date
       )).map((item) => ({
         ...item,
-        amount: finiteNumber(item.amount),
-        accountAmount: finiteNumber(item.accountAmount, finiteNumber(item.amount)),
+        ...normalizedMoney(item, "amount"),
+        ...normalizedMoney(item, "accountAmount", moneyFields(item.amount, item.amountMinor).value),
         currencyCode: item.currencyCode || raw.baseCurrency || DEFAULT_CURRENCY,
         exchangeRate: finiteNumber(item.exchangeRate, 1) || 1,
         time: item.time || "12:00",
@@ -289,16 +313,12 @@ export function normalizeLedger(raw, now = new Date().toISOString()) {
         && Array.isArray(item.sourceTransactionIds)
         && item.sourceTransactionIds.length
         && item.transactionId
-        && finiteNumber(item.amount) > 0
+        && readMinor(item) > 0
       )).map((item) => ({
         ...item,
         sourceTransactionIds: [...new Set(item.sourceTransactionIds.filter(Boolean))],
-        amount: finiteNumber(item.amount),
-        allocations: item.allocations && typeof item.allocations === "object"
-          ? Object.fromEntries(Object.entries(item.allocations)
-            .filter(([id, amount]) => id && finiteNumber(amount) > 0)
-            .map(([id, amount]) => [id, finiteNumber(amount)]))
-          : null,
+        ...normalizedMoney(item, "amount"),
+        ...normalizedAllocations(item),
         deletedAt: item.deletedAt || null,
       }))
     : [];
@@ -309,23 +329,19 @@ export function normalizeLedger(raw, now = new Date().toISOString()) {
         && Array.isArray(item.sourceTransactionIds)
         && item.sourceTransactionIds.length
         && item.transactionId
-        && finiteNumber(item.expectedAmount) > 0
-        && finiteNumber(item.actualAmount) > 0
+        && readMinor(item, "expectedAmount") > 0
+        && readMinor(item, "actualAmount") > 0
       )).map((item) => ({
         ...item,
         sourceTransactionIds: [...new Set(item.sourceTransactionIds.filter(Boolean))],
         accountId: item.accountId || null,
-        expectedAmount: finiteNumber(item.expectedAmount),
-        actualAmount: finiteNumber(item.actualAmount),
-        receiptAmount: finiteNumber(item.receiptAmount, finiteNumber(item.expectedAmount)),
-        differenceAmount: Math.max(0, finiteNumber(item.differenceAmount)),
+        ...normalizedMoney(item, "expectedAmount"),
+        ...normalizedMoney(item, "actualAmount"),
+        ...normalizedMoney(item, "receiptAmount", moneyFields(item.expectedAmount, item.expectedAmountMinor).value),
+        ...normalizedMoney(item, "differenceAmount", 0, 0),
         differenceType: ["income", "expense"].includes(item.differenceType) ? item.differenceType : null,
         differenceTransactionId: item.differenceTransactionId || null,
-        allocations: item.allocations && typeof item.allocations === "object"
-          ? Object.fromEntries(Object.entries(item.allocations)
-            .filter(([id, amount]) => id && finiteNumber(amount) > 0)
-            .map(([id, amount]) => [id, finiteNumber(amount)]))
-          : null,
+        ...normalizedAllocations(item),
         currencyCode: item.currencyCode || raw.baseCurrency || DEFAULT_CURRENCY,
         exchangeRate: finiteNumber(item.exchangeRate, 1) || 1,
         date: item.date || now.slice(0, 10),
@@ -342,7 +358,7 @@ export function normalizeLedger(raw, now = new Date().toISOString()) {
         && item.targetAccountId
         && item.startDate
         && finiteNumber(item.totalPeriods) > 0
-        && finiteNumber(item.startAmount) > 0
+        && readMinor(item, "startAmount") > 0
       )).map((item) => ({
         ...item,
         bookId: item.bookId || activeBookId,
@@ -354,9 +370,9 @@ export function normalizeLedger(raw, now = new Date().toISOString()) {
         startDate: item.startDate,
         frequency: ["daily", "weekly", "monthly"].includes(item.frequency) ? item.frequency : "monthly",
         totalPeriods: Math.min(1000, Math.max(1, Math.trunc(finiteNumber(item.totalPeriods, 1)))),
-        startAmount: Math.max(0.01, finiteNumber(item.startAmount, 0.01)),
-        incrementAmount: Math.max(0, finiteNumber(item.incrementAmount)),
-        targetAmount: Math.max(0.01, finiteNumber(item.targetAmount, finiteNumber(item.startAmount, 0.01))),
+        ...normalizedMoney(item, "startAmount", 0.01, 1),
+        ...normalizedMoney(item, "incrementAmount", 0, 0),
+        ...normalizedMoney(item, "targetAmount", moneyFields(item.startAmount, item.startAmountMinor, 1).value, 1),
         status: item.status === "paused" ? "paused" : "active",
         deletedAt: item.deletedAt || null,
         createdAt: item.createdAt || now,
@@ -405,7 +421,7 @@ export function normalizeLedger(raw, now = new Date().toISOString()) {
     });
   }
 
-  const monthlyBudget = finiteNumber(raw.settings?.monthlyBudget, fallback.settings.monthlyBudget);
+  const monthlyBudget = moneyFields(raw.settings?.monthlyBudget, raw.settings?.monthlyBudgetMinor, fallback.settings.monthlyBudgetMinor);
   const state = {
     ...fallback,
     version: SCHEMA_VERSION,
@@ -414,7 +430,8 @@ export function normalizeLedger(raw, now = new Date().toISOString()) {
     settings: {
       ...fallback.settings,
       ...(raw.settings && typeof raw.settings === "object" ? raw.settings : {}),
-      monthlyBudget: monthlyBudget >= 0 ? monthlyBudget : fallback.settings.monthlyBudget,
+      monthlyBudget: monthlyBudget.minor >= 0 ? monthlyBudget.value : fallback.settings.monthlyBudget,
+      monthlyBudgetMinor: monthlyBudget.minor >= 0 ? monthlyBudget.minor : fallback.settings.monthlyBudgetMinor,
     },
     books,
     categories: categories.length ? categories : fallback.categories,
@@ -440,5 +457,22 @@ export function normalizeLedger(raw, now = new Date().toISOString()) {
   ARRAY_COLLECTIONS.forEach((name) => {
     state[name] = Array.isArray(raw[name]) ? raw[name].filter(validEntity) : fallback[name];
   });
+  state.budgets = state.budgets.map((item) => ({
+    ...item,
+    ...(item.kind === "goal" ? {
+      ...normalizedMoney(item, "targetAmount", 0, 0),
+      ...normalizedMoney(item, "currentAmount", 0, 0),
+    } : normalizedMoney(item, "amount", 0, 0)),
+  }));
+  state.schedules = state.schedules.map((item) => ({ ...item, ...normalizedMoney(item, "amount", 0, 0) }));
+  state.installments = state.installments.map((item) => ({ ...item, ...normalizedMoney(item, "totalAmount", 0, 0) }));
+  state.templates = state.templates.map((item) => ({
+    ...item,
+    values: item.values && typeof item.values === "object" ? {
+      ...item.values,
+      ...normalizedMoney(item.values, "amount"),
+      ...normalizedMoney(item.values, "originalAmount", moneyFields(item.values.amount, item.values.amountMinor).value),
+    } : item.values,
+  }));
   return state;
 }

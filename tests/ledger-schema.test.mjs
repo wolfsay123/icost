@@ -16,6 +16,8 @@ test("默认账本包含完整业务集合", () => {
   assert.equal(state.activeBookId, DEFAULT_BOOK_ID);
   assert.equal(state.books.length, 1);
   assert.equal(state.books[0].monthlyBudget, 5000);
+  assert.equal(state.accounts[0].initialBalanceMinor, 0);
+  assert.equal("initialBalanceMinor" in state.categories[0], false);
   assert.equal(state.currencies[0].code, "CNY");
   ["members", "tags", "merchants", "budgets", "schedules", "installments", "savingsPlans", "templates", "recycleBin"]
     .forEach((name) => assert.ok(Array.isArray(state[name]), `${name} 应为数组`));
@@ -45,8 +47,10 @@ test("旧版单账本数据会无损迁移到最新版本", () => {
   assert.equal(state.settings.monthlyBudget, 0);
   assert.equal(state.books[0].monthlyBudget, 0);
   assert.equal(state.accounts[0].initialBalance, 88.5);
+  assert.equal(state.accounts[0].initialBalanceMinor, 8850);
   assert.deepEqual(state.accounts[0].bookIds, [DEFAULT_BOOK_ID]);
   assert.equal(state.transactions[0].amount, 12.3);
+  assert.equal(state.transactions[0].amountMinor, 1230);
   assert.equal(state.transactions[0].bookId, DEFAULT_BOOK_ID);
   assert.equal(state.transactions[0].note, "保留备注");
   assert.equal(state.metadata.migratedFrom, 1);
@@ -147,6 +151,7 @@ test("退款、结算和信用扩展字段会被规范化", () => {
   assert.equal(state.accounts[0].credit.repaymentType, "delay");
   assert.deepEqual(state.accounts[0].credit.repaymentReminderDays, [7, 0]);
   assert.equal(state.refunds[0].accountAmount, 30);
+  assert.equal(state.refunds[0].accountAmountMinor, 3000);
   assert.deepEqual(state.settlements[0].sourceTransactionIds, ["tx-1"]);
   assert.equal(state.transactions[0].autoBookingCandidateId, "candidate-1");
 });

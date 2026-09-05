@@ -31,6 +31,8 @@ import {
   createDefaultLedger,
   normalizeLedger,
 } from "./ledger-schema.mjs";
+import { prepareLedgerRestore } from "./ledger-restore.mjs";
+import { writeMoney } from "./money.mjs";
 import {
   accountAvailableInBook,
   advanceRecurringDate,
@@ -207,6 +209,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       state.metadata.dataUpdatedAt = new Date().toISOString();
     }
     state.metadata.lastSavedAt = new Date().toISOString();
+    state = normalizeState(state);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     renderAll();
     if (message) showToast(message);
@@ -1799,21 +1802,26 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     if (envelope.format !== "zhiji-encrypted-backup" || !envelope.salt || !envelope.iv || !envelope.data) {
       throw new Error("云端文件格式不受支持");
     }
+    let decrypted;
     try {
-      const salt = base64ToBytes(envelope.salt);
       const iv = base64ToBytes(envelope.iv);
-      const key = await deriveEncryptionKey(passphrase, salt, "decrypt");
-      const decrypted = await crypto.subtle.decrypt(
+      const key = await deriveEncryptionKey(passphrase, base64ToBytes(envelope.salt), "decrypt");
+      decrypted = await crypto.subtle.decrypt(
         { name: "AES-GCM", iv },
         key,
         base64ToBytes(envelope.data)
       );
-      const payload = JSON.parse(new TextDecoder().decode(decrypted));
-      if (payload.app !== "zhiji-local" || !payload.state) throw new Error("INVALID_BACKUP");
-      return normalizeState(payload.state);
     } catch {
       throw new Error("解密失败，请检查同步密钥是否正确");
     }
+    let payload;
+    try {
+      payload = JSON.parse(new TextDecoder().decode(decrypted));
+    } catch {
+      throw new Error("备份解密成功，但内容不是有效 JSON");
+    }
+    if (payload.app !== "zhiji-local" || !payload.state) throw new Error("备份内容不是智记完整账本");
+    return prepareLedgerRestore(payload.state);
   }
 
   async function downloadRemoteState(config) {
@@ -1990,8 +1998,9 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     if (trimmed.startsWith("{")) {
       const parsed = JSON.parse(content);
       const candidate = parsed.app === "zhiji-local" && parsed.state ? parsed.state : parsed;
+      const restoredState = prepareLedgerRestore(candidate);
       if (!window.confirm("导入完整 JSON 会覆盖当前设备数据，确定继续吗？")) return null;
-      state = normalizeState(candidate);
+      state = restoredState;
       saveState();
       return `完整数据已恢复，共 ${state.transactions.length} 笔账目`;
     }
@@ -2497,7 +2506,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
     });
     elements.budgetForm.addEventListener("submit", (event) => {
       event.preventDefault();
-      activeBook().monthlyBudget = Math.max(0, Number(elements.monthlyBudget.value) || 0);
+      writeMoney(activeBook(), "monthlyBudget", Math.max(0, Number(elements.monthlyBudget.value) || 0));
       saveState("月预算已更新");
     });
 
@@ -2507,7 +2516,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
       const amount = Math.round(Number(elements.budgetAmount.value) * 100) / 100;
       if (!(amount > 0)) return showToast("预算金额必须大于 0", true);
       const existing = state.budgets.find((item) => item.bookId === state.activeBookId && item.kind === "category" && item.categoryId === categoryId);
-      if (existing) existing.amount = amount;
+      if (existing) writeMoney(existing, "amount", amount);
       else state.budgets.push({ id: makeId("budget"), bookId: state.activeBookId, kind: "category", categoryId, amount, period: "monthly", createdAt: new Date().toISOString() });
       elements.budgetAmount.value = "";
       saveState(existing ? "分类预算已更新" : "分类预算已新增");
@@ -2618,7 +2627,7 @@ import { updateLedgerWidget } from "./ledger-widget.mjs";
         const goal = state.budgets.find((item) => item.id === goalId);
         const amount = Number(window.prompt("本次存入金额", "100"));
         if (!goal || !(amount > 0)) return;
-        goal.currentAmount = Math.min(goal.targetAmount, Math.round((goal.currentAmount + amount) * 100) / 100);
+        writeMoney(goal, "currentAmount", Math.min(goal.targetAmount, roundMoney(goal.currentAmount + amount)));
         saveState("目标进度已更新");
       } else if (action === "delete-schedule") {
         state.schedules = state.schedules.filter((item) => item.id !== scheduleId);
